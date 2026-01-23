@@ -168,3 +168,64 @@ class DraftReply(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     status: DraftStatus = DraftStatus.PENDING_REVIEW
     instructions: str | None = None  # Instructions given to LLM for drafting
+
+
+class ActionItemStatus(str, Enum):
+    """Status of an action item."""
+
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    DISMISSED = "dismissed"
+
+
+class DigestStatus(str, Enum):
+    """Delivery status of a digest."""
+
+    PENDING = "pending"
+    DELIVERED = "delivered"
+    FAILED = "failed"
+
+
+class ProcessedEmail(BaseModel):
+    """Record of a processed email in the service."""
+
+    id: str  # SHA256(message_id or source:folder:email_id)
+    message_id: str | None = None
+    email_id: str
+    source: str
+    folder: str
+    processed_at: datetime = Field(default_factory=datetime.now)
+    digest_id: str | None = None
+    classification: dict[str, Any] | None = None  # {category, priority}
+    llm_analysis: dict[str, Any] | None = None  # Full analysis blob
+
+
+class Digest(BaseModel):
+    """Email digest summary."""
+
+    id: str  # UUID
+    created_at: datetime = Field(default_factory=datetime.now)
+    period_start: datetime
+    period_end: datetime
+    email_count: int
+    summary: str
+    raw_content: str | None = None  # Full markdown
+    delivery_status: DigestStatus = DigestStatus.PENDING
+
+
+class ActionItem(BaseModel):
+    """An action item extracted from an email."""
+
+    id: str  # UUID
+    email_id: str  # FK to processed_emails
+    digest_id: str | None = None
+    created_at: datetime = Field(default_factory=datetime.now)
+    title: str
+    description: str | None = None
+    priority: EmailPriority = EmailPriority.NORMAL
+    urgency: str = "normal"  # low/normal/high/urgent
+    due_date: datetime | None = None
+    status: ActionItemStatus = ActionItemStatus.PENDING
+    completed_at: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)  # JSON for extensibility

@@ -108,6 +108,29 @@ let
     };
   };
 
+  # Submodule for digest delivery configuration
+  digestDeliveryType = types.submodule {
+    options = {
+      type = mkOption {
+        type = types.enum [ "file" ];
+        default = "file";
+        description = "Delivery method type (currently only 'file' is supported)";
+      };
+
+      outputDir = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Output directory for digest files (defaults to ~/.local/share/emma/digests/)";
+      };
+
+      format = mkOption {
+        type = types.enum [ "markdown" "html" "text" ];
+        default = "markdown";
+        description = "Output format for digests";
+      };
+    };
+  };
+
   # Convert Nix attrset to Python config format (camelCase -> snake_case)
   toSnakeCase = str:
     let
@@ -145,6 +168,13 @@ let
     account_name = account.accountName;
   };
 
+  # Convert digest delivery settings
+  convertDigestDelivery = delivery: {
+    type = delivery.type;
+    output_dir = delivery.outputDir;
+    format = delivery.format;
+  };
+
   # Build the final settings structure
   finalSettings = {
     llm = {
@@ -167,6 +197,31 @@ let
 
     batch_size = cfg.settings.batchSize;
     polling_interval = cfg.settings.pollingInterval;
+
+    # Service configuration
+    service = {
+      enabled = cfg.service.enable;
+      polling_interval = cfg.service.pollingInterval;
+      monitor = {
+        enabled = cfg.service.monitor.enable;
+        sources = cfg.service.monitor.sources;
+        folders = cfg.service.monitor.folders;
+        auto_classify = cfg.service.monitor.autoClassify;
+        apply_rules = cfg.service.monitor.applyRules;
+        extract_actions = cfg.service.monitor.extractActions;
+      };
+      digest = {
+        enabled = cfg.service.digest.enable;
+        schedule = cfg.service.digest.schedule;
+        period_hours = cfg.service.digest.periodHours;
+        min_emails = cfg.service.digest.minEmails;
+        include_action_items = cfg.service.digest.includeActionItems;
+        delivery = map convertDigestDelivery cfg.service.digest.delivery;
+      };
+      action_items = {
+        auto_extract = cfg.service.actionItems.autoExtract;
+      };
+    };
   };
 
 in
@@ -288,6 +343,111 @@ in
         description = "Polling interval in seconds for checking new emails";
       };
     };
+
+    # Background service configuration
+    service = {
+      enable = mkEnableOption "Emma background service for email monitoring and automation";
+
+      pollingInterval = mkOption {
+        type = types.int;
+        default = 300;
+        description = "Polling interval in seconds for the service";
+      };
+
+      monitor = {
+        enable = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Enable email monitoring";
+        };
+
+        sources = mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+          description = "Email sources to monitor (empty = all configured sources)";
+        };
+
+        folders = mkOption {
+          type = types.listOf types.str;
+          default = [ "INBOX" ];
+          description = "Folders to monitor for new emails";
+        };
+
+        autoClassify = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Automatically classify emails using LLM";
+        };
+
+        applyRules = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Apply automation rules to emails";
+        };
+
+        extractActions = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Extract action items from emails";
+        };
+      };
+
+      digest = {
+        enable = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Enable email digest generation";
+        };
+
+        schedule = mkOption {
+          type = types.listOf types.str;
+          default = [ "08:00" "20:00" ];
+          description = "Times to generate digests (24h format)";
+          example = [ "08:00" "12:00" "18:00" ];
+        };
+
+        periodHours = mkOption {
+          type = types.int;
+          default = 12;
+          description = "Hours to include in each digest";
+        };
+
+        minEmails = mkOption {
+          type = types.int;
+          default = 1;
+          description = "Minimum emails required to generate a digest";
+        };
+
+        includeActionItems = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Include action items in digests";
+        };
+
+        delivery = mkOption {
+          type = types.listOf digestDeliveryType;
+          default = [ ];
+          description = "Delivery methods for digests (defaults to file if empty)";
+          example = literalExpression ''
+            [
+              {
+                type = "file";
+                format = "markdown";
+                outputDir = "~/.local/share/emma/digests";
+              }
+            ]
+          '';
+        };
+      };
+
+      actionItems = {
+        autoExtract = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Automatically extract action items from processed emails";
+        };
+      };
+    };
   };
 
   config = mkIf cfg.enable {
@@ -295,5 +455,39 @@ in
 
     xdg.configFile."emma/config.yaml".source =
       settingsFormat.generate "emma-config.yaml" finalSettings;
+
+    # Systemd user service for Emma background processing
+    systemd.user.services.emma = mkIf cfg.service.enable {
+      Unit = {
+        Description = "Emma Email Automation Service";
+        After = [ "network.target" ];
+      };
+
+      Service = {
+        Type = "simple";
+        ExecStart = "${cfg.package}/bin/emma service start --foreground";
+        Restart = "on-failure";
+        RestartSec = "10s";
+
+        # Environment
+        Environment = [
+          "HOME=%h"
+        ];
+
+        # Security hardening
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = "read-only";
+        ReadWritePaths = [
+          "%h/.local/share/emma"
+          "%h/.config/emma"
+        ];
+        PrivateTmp = true;
+      };
+
+      Install = {
+        WantedBy = [ "default.target" ];
+      };
+    };
   };
 }

@@ -22,6 +22,7 @@ from email_agent.processors.llm import LLMProcessor
 from email_agent.sources.imap import IMAPSource
 from email_agent.sources.maildir import MaildirSource
 from email_agent.tui import select_email
+from email_agent.models import ActionItemStatus, EmailPriority
 
 app = typer.Typer(
     name="emma",
@@ -1149,6 +1150,464 @@ def draft_discard(
     _save_drafts(settings, drafts)
 
     console.print(f"[green]Draft discarded: {full_id[:8]}[/green]")
+
+
+# ─── Service Commands ────────────────────────────────────────────────────────
+
+
+service_app = typer.Typer(help="Manage Emma background service", no_args_is_help=True)
+app.add_typer(service_app, name="service")
+
+
+@service_app.command("start")
+def service_start(
+    foreground: Annotated[bool, typer.Option("--foreground", "-f", help="Run in foreground")] = False,
+) -> None:
+    """Start the Emma background service.
+
+    By default runs as a daemon. Use --foreground to run interactively.
+    """
+    settings = load_settings()
+
+    if not settings.service.enabled:
+        console.print("[yellow]Service is disabled in configuration.[/yellow]")
+        console.print("Set 'service.enabled: true' in config.yaml to enable.")
+        raise typer.Exit(1)
+
+    from email_agent.service import EmmaService
+
+    service = EmmaService(settings)
+
+    if foreground:
+        console.print("[cyan]Starting Emma service in foreground...[/cyan]")
+        console.print("Press Ctrl+C to stop.\n")
+        asyncio.run(service.start())
+    else:
+        # For background, we'd normally daemonize, but recommend systemd
+        console.print("[yellow]Background mode not implemented.[/yellow]")
+        console.print("Use --foreground or configure as a systemd service.")
+        console.print("\nFor NixOS/Home Manager, enable the systemd service:")
+        console.print("  services.emma.service.enable = true")
+
+
+@service_app.command("stop")
+def service_stop() -> None:
+    """Stop the Emma background service.
+
+    Only works with systemd-managed services.
+    """
+    console.print("[yellow]Direct stop not supported.[/yellow]")
+    console.print("If running in foreground, use Ctrl+C.")
+    console.print("For systemd service: systemctl --user stop emma")
+
+
+@service_app.command("status")
+def service_status() -> None:
+    """Show Emma service status and statistics."""
+    settings = load_settings()
+
+    console.print("[bold cyan]Emma Service Status[/bold cyan]\n")
+
+    # Configuration status
+    console.print("[bold]Configuration:[/bold]")
+    console.print(f"  Service enabled: {'[green]Yes[/green]' if settings.service.enabled else '[red]No[/red]'}")
+    console.print(f"  Monitor enabled: {'[green]Yes[/green]' if settings.service.monitor.enabled else '[red]No[/red]'}")
+    console.print(f"  Digest enabled: {'[green]Yes[/green]' if settings.service.digest.enabled else '[red]No[/red]'}")
+    console.print(f"  Polling interval: {settings.service.polling_interval}s")
+    console.print(f"  Digest schedule: {', '.join(settings.service.digest.schedule)}")
+
+    # Statistics from state
+    from email_agent.service import ServiceState
+    state = ServiceState(settings.db_path)
+    stats = state.get_stats()
+
+    console.print("\n[bold]Statistics:[/bold]")
+    console.print(f"  Total processed emails: {stats['total_processed_emails']}")
+    console.print(f"  Emails last 24h: {stats['emails_last_24h']}")
+    console.print(f"  Total digests: {stats['total_digests']}")
+    console.print(f"  Total action items: {stats['total_action_items']}")
+
+    if stats.get('action_items_by_status'):
+        console.print("  Action items by status:")
+        for status, count in stats['action_items_by_status'].items():
+            console.print(f"    - {status}: {count}")
+
+    if stats.get('last_digest'):
+        console.print(f"  Last digest: {stats['last_digest']}")
+
+
+@service_app.command("run-once")
+def service_run_once(
+    monitor: Annotated[bool, typer.Option("--monitor", "-m", help="Run monitor cycle")] = True,
+    digest: Annotated[bool, typer.Option("--digest", "-d", help="Generate digest")] = False,
+) -> None:
+    """Run service jobs once without starting daemon.
+
+    Useful for testing or cron-based scheduling.
+    """
+    settings = load_settings()
+
+    from email_agent.service import EmmaService
+
+    service = EmmaService(settings)
+
+    async def _run() -> None:
+        results = await service.run_once(run_monitor=monitor, run_digest=digest)
+
+        if "monitor" in results:
+            console.print("\n[bold cyan]Monitor Results:[/bold cyan]")
+            m = results["monitor"]
+            console.print(f"  Emails found: {m.get('emails_found', 0)}")
+            console.print(f"  Emails processed: {m.get('emails_processed', 0)}")
+            console.print(f"  Action items created: {m.get('action_items_created', 0)}")
+            console.print(f"  Errors: {m.get('errors', 0)}")
+
+        if "digest" in results:
+            console.print("\n[bold cyan]Digest Results:[/bold cyan]")
+            d = results["digest"]
+            if d.get("generated") is False:
+                console.print(f"  No digest generated: {d.get('reason', 'unknown')}")
+            else:
+                console.print(f"  Digest ID: {d.get('id', 'N/A')[:8]}")
+                console.print(f"  Email count: {d.get('email_count', 0)}")
+                console.print(f"  Delivered: {'[green]Yes[/green]' if d.get('delivered') else '[red]No[/red]'}")
+
+    asyncio.run(_run())
+
+
+# ─── Digest Commands ─────────────────────────────────────────────────────────
+
+
+digest_app = typer.Typer(help="Manage email digests", no_args_is_help=True)
+app.add_typer(digest_app, name="digest")
+
+
+@digest_app.command("generate")
+def digest_generate(
+    hours: Annotated[int, typer.Option("--hours", "-h", help="Hours to include in digest")] = 12,
+    deliver: Annotated[bool, typer.Option("--deliver", "-d", help="Deliver after generating")] = True,
+    force: Annotated[bool, typer.Option("--force", "-f", help="Generate even if under threshold")] = False,
+) -> None:
+    """Generate an email digest now.
+
+    Summarizes processed emails from the specified period.
+    """
+    settings = load_settings()
+
+    from email_agent.service import DigestGenerator, ServiceState
+    from email_agent.processors.llm import LLMProcessor
+
+    state = ServiceState(settings.db_path)
+    llm_processor = None
+    if settings.llm:
+        try:
+            api_key = settings.anthropic_api_key if settings.llm.provider == "anthropic" else None
+            llm_processor = LLMProcessor(settings.llm, api_key)
+        except Exception:
+            pass
+
+    generator = DigestGenerator(settings, state, llm_processor)
+
+    async def _generate() -> None:
+        console.print(f"Generating digest for last {hours} hours...")
+
+        digest = await generator.generate(period_hours=hours, force=force)
+
+        if not digest:
+            console.print("[yellow]No digest generated (no emails or below threshold).[/yellow]")
+            console.print("Use --force to generate anyway.")
+            return
+
+        console.print(f"\n[green]Digest generated: {digest.id[:8]}[/green]")
+        console.print(f"  Period: {digest.period_start.strftime('%Y-%m-%d %H:%M')} to {digest.period_end.strftime('%Y-%m-%d %H:%M')}")
+        console.print(f"  Emails: {digest.email_count}")
+
+        if deliver:
+            console.print("\nDelivering digest...")
+            success = await generator.deliver(digest)
+            if success:
+                console.print("[green]Digest delivered successfully.[/green]")
+            else:
+                console.print("[red]Digest delivery failed.[/red]")
+
+    asyncio.run(_generate())
+
+
+@digest_app.command("list")
+def digest_list(
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Max digests to show")] = 10,
+) -> None:
+    """List recent digests."""
+    settings = load_settings()
+
+    from email_agent.service import ServiceState
+
+    state = ServiceState(settings.db_path)
+    digests = state.list_digests(limit=limit)
+
+    if not digests:
+        console.print("[yellow]No digests found.[/yellow]")
+        return
+
+    table = Table(title="Recent Digests")
+    table.add_column("ID", style="dim", width=8)
+    table.add_column("Created", width=19)
+    table.add_column("Period", width=25)
+    table.add_column("Emails", width=8)
+    table.add_column("Status", width=10)
+
+    for digest in digests:
+        period = f"{digest.period_start.strftime('%m/%d %H:%M')} - {digest.period_end.strftime('%H:%M')}"
+        status = digest.delivery_status.value
+        if status == "delivered":
+            status = f"[green]{status}[/green]"
+        elif status == "failed":
+            status = f"[red]{status}[/red]"
+        else:
+            status = f"[yellow]{status}[/yellow]"
+
+        table.add_row(
+            digest.id[:8],
+            digest.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            period,
+            str(digest.email_count),
+            status,
+        )
+
+    console.print(table)
+
+
+@digest_app.command("show")
+def digest_show(
+    ctx: typer.Context,
+    digest_id: Annotated[str, typer.Argument(help="Digest ID (or prefix)")],
+) -> None:
+    """Show digest content."""
+    settings = load_settings()
+
+    from email_agent.service import ServiceState
+
+    state = ServiceState(settings.db_path)
+
+    # Find by full ID or prefix
+    digest = state.get_digest(digest_id)
+    if not digest:
+        # Try prefix match
+        for d in state.list_digests(limit=100):
+            if d.id.startswith(digest_id):
+                digest = d
+                break
+
+    if not digest:
+        _error_with_help(ctx, f"Digest not found: {digest_id}")
+
+    console.print(Panel(f"[bold]Digest: {digest.id}[/bold]"))
+    console.print(f"[bold]Created:[/bold] {digest.created_at}")
+    console.print(f"[bold]Period:[/bold] {digest.period_start} to {digest.period_end}")
+    console.print(f"[bold]Emails:[/bold] {digest.email_count}")
+    console.print(f"[bold]Status:[/bold] {digest.delivery_status.value}")
+
+    console.print("\n[bold cyan]Summary:[/bold cyan]")
+    console.print(digest.summary)
+
+    if digest.raw_content:
+        console.print("\n[bold cyan]Full Content:[/bold cyan]")
+        console.print("─" * 60)
+        console.print(digest.raw_content)
+
+
+# ─── Action Item Commands ────────────────────────────────────────────────────
+
+
+actions_app = typer.Typer(help="Manage action items extracted from emails", no_args_is_help=True)
+app.add_typer(actions_app, name="actions")
+
+
+@actions_app.command("list")
+def actions_list(
+    ctx: typer.Context,
+    status: Annotated[str | None, typer.Option("--status", "-s", help="Filter by status (pending/in_progress/completed/dismissed)")] = None,
+    priority: Annotated[str | None, typer.Option("--priority", "-p", help="Filter by priority (low/normal/high/urgent)")] = None,
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Max items to show")] = 20,
+) -> None:
+    """List action items."""
+    settings = load_settings()
+
+    from email_agent.service import ServiceState
+
+    state = ServiceState(settings.db_path)
+
+    filter_status = None
+    if status:
+        try:
+            filter_status = ActionItemStatus(status)
+        except ValueError:
+            valid = ", ".join(s.value for s in ActionItemStatus)
+            _error_with_help(ctx, f"Unknown status: {status}. Valid: {valid}")
+
+    filter_priority = None
+    if priority:
+        try:
+            filter_priority = EmailPriority(priority)
+        except ValueError:
+            valid = ", ".join(p.value for p in EmailPriority)
+            _error_with_help(ctx, f"Unknown priority: {priority}. Valid: {valid}")
+
+    items = state.list_action_items(
+        status=filter_status,
+        priority=filter_priority,
+        limit=limit,
+    )
+
+    if not items:
+        console.print("[yellow]No action items found.[/yellow]")
+        return
+
+    table = Table(title="Action Items")
+    table.add_column("ID", style="dim", width=8)
+    table.add_column("Pri", width=4)
+    table.add_column("Status", width=12)
+    table.add_column("Due", width=10)
+    table.add_column("Title", width=40)
+
+    for item in items:
+        pri = item.priority.value[0].upper()
+        if item.priority == EmailPriority.URGENT:
+            pri = f"[red]{pri}[/red]"
+        elif item.priority == EmailPriority.HIGH:
+            pri = f"[yellow]{pri}[/yellow]"
+
+        status_str = item.status.value
+        if item.status == ActionItemStatus.PENDING:
+            status_str = f"[yellow]{status_str}[/yellow]"
+        elif item.status == ActionItemStatus.COMPLETED:
+            status_str = f"[green]{status_str}[/green]"
+        elif item.status == ActionItemStatus.DISMISSED:
+            status_str = f"[dim]{status_str}[/dim]"
+
+        due = item.due_date.strftime("%Y-%m-%d") if item.due_date else "-"
+        title = item.title[:38] + "..." if len(item.title) > 40 else item.title
+
+        table.add_row(item.id[:8], pri, status_str, due, title)
+
+    console.print(table)
+
+
+@actions_app.command("show")
+def actions_show(
+    ctx: typer.Context,
+    item_id: Annotated[str, typer.Argument(help="Action item ID (or prefix)")],
+) -> None:
+    """Show action item details."""
+    settings = load_settings()
+
+    from email_agent.service import ServiceState
+
+    state = ServiceState(settings.db_path)
+
+    # Find by full ID or prefix
+    item = state.get_action_item(item_id)
+    if not item:
+        for i in state.list_action_items(limit=100):
+            if i.id.startswith(item_id):
+                item = i
+                break
+
+    if not item:
+        _error_with_help(ctx, f"Action item not found: {item_id}")
+
+    console.print(Panel(f"[bold]Action Item: {item.id}[/bold]"))
+    console.print(f"[bold]Title:[/bold] {item.title}")
+    console.print(f"[bold]Status:[/bold] {item.status.value}")
+    console.print(f"[bold]Priority:[/bold] {item.priority.value}")
+    console.print(f"[bold]Urgency:[/bold] {item.urgency}")
+    console.print(f"[bold]Created:[/bold] {item.created_at}")
+
+    if item.due_date:
+        console.print(f"[bold]Due Date:[/bold] {item.due_date}")
+
+    if item.completed_at:
+        console.print(f"[bold]Completed:[/bold] {item.completed_at}")
+
+    if item.description:
+        console.print(f"\n[bold cyan]Description:[/bold cyan]")
+        console.print(item.description)
+
+    if item.metadata:
+        console.print(f"\n[bold cyan]Metadata:[/bold cyan]")
+        console.print(json.dumps(item.metadata, indent=2))
+
+
+@actions_app.command("complete")
+def actions_complete(
+    ctx: typer.Context,
+    item_id: Annotated[str, typer.Argument(help="Action item ID (or prefix)")],
+) -> None:
+    """Mark an action item as completed."""
+    settings = load_settings()
+
+    from email_agent.service import ServiceState
+
+    state = ServiceState(settings.db_path)
+
+    # Find by full ID or prefix
+    full_id = item_id
+    item = state.get_action_item(item_id)
+    if not item:
+        for i in state.list_action_items(limit=100):
+            if i.id.startswith(item_id):
+                full_id = i.id
+                item = i
+                break
+
+    if not item:
+        _error_with_help(ctx, f"Action item not found: {item_id}")
+
+    if item.status == ActionItemStatus.COMPLETED:
+        console.print("[yellow]Action item is already completed.[/yellow]")
+        return
+
+    success = state.update_action_status(full_id, ActionItemStatus.COMPLETED)
+    if success:
+        console.print(f"[green]Action item completed: {full_id[:8]}[/green]")
+    else:
+        console.print("[red]Failed to update action item.[/red]")
+
+
+@actions_app.command("dismiss")
+def actions_dismiss(
+    ctx: typer.Context,
+    item_id: Annotated[str, typer.Argument(help="Action item ID (or prefix)")],
+) -> None:
+    """Dismiss an action item."""
+    settings = load_settings()
+
+    from email_agent.service import ServiceState
+
+    state = ServiceState(settings.db_path)
+
+    # Find by full ID or prefix
+    full_id = item_id
+    item = state.get_action_item(item_id)
+    if not item:
+        for i in state.list_action_items(limit=100):
+            if i.id.startswith(item_id):
+                full_id = i.id
+                item = i
+                break
+
+    if not item:
+        _error_with_help(ctx, f"Action item not found: {item_id}")
+
+    if item.status == ActionItemStatus.DISMISSED:
+        console.print("[yellow]Action item is already dismissed.[/yellow]")
+        return
+
+    success = state.update_action_status(full_id, ActionItemStatus.DISMISSED)
+    if success:
+        console.print(f"[green]Action item dismissed: {full_id[:8]}[/green]")
+    else:
+        console.print("[red]Failed to update action item.[/red]")
 
 
 if __name__ == "__main__":
