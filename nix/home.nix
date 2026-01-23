@@ -174,7 +174,11 @@ in
   options.programs.emma = {
     enable = mkEnableOption "emma, an email automation platform with LLM processing";
 
-    package = mkPackageOption pkgs "emma" { };
+    package = mkOption {
+      type = types.package;
+      default = pkgs.callPackage ./package.nix { };
+      description = "The emma package to use";
+    };
 
     settings = {
       llm = {
