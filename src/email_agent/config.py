@@ -80,6 +80,52 @@ class GuardrailSettings(BaseModel):
     audit_db_name: str = "audit.db"
 
 
+class DigestDeliveryConfig(BaseModel):
+    """Configuration for digest delivery methods."""
+
+    type: str = "file"  # "file" only for now (email deferred)
+    output_dir: Path | None = None  # Default: ~/.local/share/emma/digests/
+    format: str = "markdown"  # "markdown", "html", "text"
+
+
+class DigestConfig(BaseModel):
+    """Configuration for email digest generation."""
+
+    enabled: bool = True
+    schedule: list[str] = Field(default_factory=lambda: ["08:00", "20:00"])  # 24h times
+    period_hours: int = 12
+    min_emails: int = 1
+    include_action_items: bool = True
+    delivery: list[DigestDeliveryConfig] = Field(default_factory=list)
+
+
+class MonitorConfig(BaseModel):
+    """Configuration for email monitoring."""
+
+    enabled: bool = True
+    sources: list[str] = Field(default_factory=list)  # Empty = all configured sources
+    folders: list[str] = Field(default_factory=lambda: ["INBOX"])
+    auto_classify: bool = True
+    apply_rules: bool = True
+    extract_actions: bool = True
+
+
+class ActionItemConfig(BaseModel):
+    """Configuration for action item extraction."""
+
+    auto_extract: bool = True
+
+
+class ServiceConfig(BaseModel):
+    """Configuration for the Emma background service."""
+
+    enabled: bool = False
+    polling_interval: int = 300  # seconds (5 minutes)
+    monitor: MonitorConfig = Field(default_factory=MonitorConfig)
+    digest: DigestConfig = Field(default_factory=DigestConfig)
+    action_items: ActionItemConfig = Field(default_factory=ActionItemConfig)
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment and config files."""
 
@@ -112,6 +158,9 @@ class Settings(BaseSettings):
     # Processing settings
     batch_size: int = 50
     polling_interval: int = 300  # seconds
+
+    # Service settings (emma background service)
+    service: ServiceConfig = Field(default_factory=ServiceConfig)
 
     def __init__(self, **data: Any) -> None:
         super().__init__(**data)
