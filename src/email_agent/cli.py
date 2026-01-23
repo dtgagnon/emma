@@ -47,7 +47,7 @@ def main(
 # ─── Source Commands ────────────────────────────────────────────────────────
 
 
-source_app = typer.Typer(help="Manage email sources")
+source_app = typer.Typer(help="Manage email sources", no_args_is_help=True)
 app.add_typer(source_app, name="source")
 
 
@@ -122,7 +122,7 @@ def source_test(
 # ─── Email Commands ─────────────────────────────────────────────────────────
 
 
-email_app = typer.Typer(help="Email operations")
+email_app = typer.Typer(help="Email operations", no_args_is_help=True)
 app.add_typer(email_app, name="email")
 
 
@@ -334,7 +334,7 @@ def _display_email(email: Email) -> None:
 # ─── Analyze Commands ───────────────────────────────────────────────────────
 
 
-analyze_app = typer.Typer(help="LLM-powered email analysis")
+analyze_app = typer.Typer(help="LLM-powered email analysis", no_args_is_help=True)
 app.add_typer(analyze_app, name="analyze")
 
 
@@ -477,7 +477,7 @@ def analyze_draft_reply(
 # ─── Config Commands ────────────────────────────────────────────────────────
 
 
-config_app = typer.Typer(help="Configuration management")
+config_app = typer.Typer(help="Configuration management", no_args_is_help=True)
 app.add_typer(config_app, name="config")
 
 
@@ -616,7 +616,7 @@ def _save_drafts(settings: Settings, drafts: dict[str, DraftReply]) -> None:
 # ─── Audit Commands ─────────────────────────────────────────────────────────
 
 
-audit_app = typer.Typer(help="View audit log of email operations")
+audit_app = typer.Typer(help="View audit log of email operations", no_args_is_help=True)
 app.add_typer(audit_app, name="audit")
 
 
@@ -738,7 +738,7 @@ def audit_export(
 # ─── Draft Commands ─────────────────────────────────────────────────────────
 
 
-draft_app = typer.Typer(help="Manage draft replies")
+draft_app = typer.Typer(help="Manage draft replies", no_args_is_help=True)
 app.add_typer(draft_app, name="draft")
 
 
