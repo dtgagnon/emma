@@ -79,6 +79,7 @@ def source_list() -> None:
 
 @source_app.command("test")
 def source_test(
+    ctx: typer.Context,
     source_type: Annotated[str, typer.Argument(help="Source type: imap, maildir")],
     host: Annotated[str | None, typer.Option(help="IMAP host")] = None,
     port: Annotated[int, typer.Option(help="IMAP port")] = 993,
@@ -87,23 +88,22 @@ def source_test(
     path: Annotated[str | None, typer.Option(help="Maildir path")] = None,
 ) -> None:
     """Test connection to an email source."""
+    if source_type == "imap":
+        if not all([host, username, password]):
+            _error_with_help(ctx, "IMAP requires --host, --username, and --password")
+    elif source_type == "maildir":
+        if not path:
+            _error_with_help(ctx, "Maildir requires --path")
+    elif source_type not in ("imap", "maildir"):
+        _error_with_help(ctx, f"Unknown source type: {source_type}. Must be 'imap' or 'maildir'")
 
     async def _test() -> None:
         if source_type == "imap":
-            if not all([host, username, password]):
-                console.print("[red]IMAP requires --host, --username, and --password[/red]")
-                raise typer.Exit(1)
             config = IMAPConfig(host=host, port=port, username=username, password=password)  # type: ignore
             source = IMAPSource(config, name="test")
-        elif source_type == "maildir":
-            if not path:
-                console.print("[red]Maildir requires --path[/red]")
-                raise typer.Exit(1)
+        else:  # maildir
             config = MaildirConfig(path=Path(path))  # type: ignore
             source = MaildirSource(config, name="test")
-        else:
-            console.print(f"[red]Unknown source type: {source_type}[/red]")
-            raise typer.Exit(1)
 
         try:
             console.print(f"Connecting to {source_type}...")
@@ -128,19 +128,18 @@ app.add_typer(email_app, name="email")
 
 @email_app.command("list")
 def email_list(
+    ctx: typer.Context,
     source: Annotated[str, typer.Option(help="Source name")] = "default",
     folder: Annotated[str, typer.Option(help="Folder to list")] = "INBOX",
     limit: Annotated[int, typer.Option(help="Max emails to show")] = 20,
 ) -> None:
     """List emails from a source."""
     settings = load_settings()
+    email_source = _get_source(settings, source)
+    if not email_source:
+        _error_with_help(ctx, f"Source '{source}' not found")
 
     async def _list() -> None:
-        # Get the source
-        email_source = _get_source(settings, source)
-        if not email_source:
-            console.print(f"[red]Source '{source}' not found[/red]")
-            raise typer.Exit(1)
 
         async with email_source:
             table = Table(title=f"Emails in {folder}")
@@ -165,19 +164,18 @@ def email_list(
 
 @email_app.command("show")
 def email_show(
+    ctx: typer.Context,
     email_id: Annotated[str, typer.Argument(help="Email ID")],
     source: Annotated[str, typer.Option(help="Source name")] = "default",
     folder: Annotated[str, typer.Option(help="Folder")] = "INBOX",
 ) -> None:
     """Show details of a specific email."""
     settings = load_settings()
+    email_source = _get_source(settings, source)
+    if not email_source:
+        _error_with_help(ctx, f"Source '{source}' not found")
 
     async def _show() -> None:
-        email_source = _get_source(settings, source)
-        if not email_source:
-            console.print(f"[red]Source '{source}' not found[/red]")
-            raise typer.Exit(1)
-
         async with email_source:
             email = await email_source.get_email(email_id, folder)
             if not email:
@@ -191,6 +189,7 @@ def email_show(
 
 @email_app.command("delete")
 def email_delete(
+    ctx: typer.Context,
     email_id: Annotated[str, typer.Argument(help="Email ID to delete")],
     source: Annotated[str, typer.Option(help="Source name")] = "default",
     folder: Annotated[str, typer.Option(help="Folder")] = "INBOX",
@@ -203,13 +202,11 @@ def email_delete(
     Use --permanent to skip Trash and permanently delete.
     """
     settings = load_settings()
+    email_source = _get_source(settings, source)
+    if not email_source:
+        _error_with_help(ctx, f"Source '{source}' not found")
 
     async def _delete() -> None:
-        email_source = _get_source(settings, source)
-        if not email_source:
-            console.print(f"[red]Source '{source}' not found[/red]")
-            raise typer.Exit(1)
-
         async with email_source:
             email = await email_source.get_email(email_id, folder)
             if not email:
@@ -258,6 +255,7 @@ def email_delete(
 
 @email_app.command("move")
 def email_move(
+    ctx: typer.Context,
     email_id: Annotated[str, typer.Argument(help="Email ID to move")],
     to_folder: Annotated[str, typer.Argument(help="Destination folder")],
     source: Annotated[str, typer.Option(help="Source name")] = "default",
@@ -269,13 +267,11 @@ def email_move(
     Without --execute, shows what would happen (dry-run).
     """
     settings = load_settings()
+    email_source = _get_source(settings, source)
+    if not email_source:
+        _error_with_help(ctx, f"Source '{source}' not found")
 
     async def _move() -> None:
-        email_source = _get_source(settings, source)
-        if not email_source:
-            console.print(f"[red]Source '{source}' not found[/red]")
-            raise typer.Exit(1)
-
         async with email_source:
             email = await email_source.get_email(email_id, from_folder)
             if not email:
@@ -342,11 +338,10 @@ analyze_app = typer.Typer(help="LLM-powered email analysis")
 app.add_typer(analyze_app, name="analyze")
 
 
-def _check_llm_config(settings: Settings) -> None:
+def _check_llm_config(settings: Settings, ctx: typer.Context) -> None:
     """Verify LLM is configured correctly."""
     if settings.llm.provider == "anthropic" and not settings.anthropic_api_key:
-        console.print("[red]ANTHROPIC_API_KEY not set (required for anthropic provider)[/red]")
-        raise typer.Exit(1)
+        _error_with_help(ctx, "ANTHROPIC_API_KEY not set (required for anthropic provider)")
 
 
 def _create_processor(settings: Settings) -> LLMProcessor:
@@ -356,20 +351,19 @@ def _create_processor(settings: Settings) -> LLMProcessor:
 
 @analyze_app.command("email")
 def analyze_email(
+    ctx: typer.Context,
     email_id: Annotated[str, typer.Argument(help="Email ID to analyze")],
     source: Annotated[str, typer.Option(help="Source name")] = "default",
     folder: Annotated[str, typer.Option(help="Folder")] = "INBOX",
 ) -> None:
     """Analyze an email using LLM."""
     settings = load_settings()
-    _check_llm_config(settings)
+    _check_llm_config(settings, ctx)
+    email_source = _get_source(settings, source)
+    if not email_source:
+        _error_with_help(ctx, f"Source '{source}' not found")
 
     async def _analyze() -> None:
-        email_source = _get_source(settings, source)
-        if not email_source:
-            console.print(f"[red]Source '{source}' not found[/red]")
-            raise typer.Exit(1)
-
         async with email_source:
             email = await email_source.get_email(email_id, folder)
             if not email:
@@ -389,20 +383,19 @@ def analyze_email(
 
 @analyze_app.command("summarize")
 def analyze_summarize(
+    ctx: typer.Context,
     email_id: Annotated[str, typer.Argument(help="Email ID")],
     source: Annotated[str, typer.Option(help="Source name")] = "default",
     folder: Annotated[str, typer.Option(help="Folder")] = "INBOX",
 ) -> None:
     """Generate a summary of an email."""
     settings = load_settings()
-    _check_llm_config(settings)
+    _check_llm_config(settings, ctx)
+    email_source = _get_source(settings, source)
+    if not email_source:
+        _error_with_help(ctx, f"Source '{source}' not found")
 
     async def _summarize() -> None:
-        email_source = _get_source(settings, source)
-        if not email_source:
-            console.print(f"[red]Source '{source}' not found[/red]")
-            raise typer.Exit(1)
-
         async with email_source:
             email = await email_source.get_email(email_id, folder)
             if not email:
@@ -420,6 +413,7 @@ def analyze_summarize(
 
 @analyze_app.command("draft-reply")
 def analyze_draft_reply(
+    ctx: typer.Context,
     email_id: Annotated[str, typer.Argument(help="Email ID")],
     instructions: Annotated[str, typer.Option(help="Reply instructions")] = "",
     source: Annotated[str, typer.Option(help="Source name")] = "default",
@@ -431,14 +425,12 @@ def analyze_draft_reply(
     Use 'emma draft list' to see pending drafts.
     """
     settings = load_settings()
-    _check_llm_config(settings)
+    _check_llm_config(settings, ctx)
+    email_source = _get_source(settings, source)
+    if not email_source:
+        _error_with_help(ctx, f"Source '{source}' not found")
 
     async def _draft() -> None:
-        email_source = _get_source(settings, source)
-        if not email_source:
-            console.print(f"[red]Source '{source}' not found[/red]")
-            raise typer.Exit(1)
-
         async with email_source:
             email = await email_source.get_email(email_id, folder)
             if not email:
@@ -570,6 +562,13 @@ llm:
 # ─── Helper Functions ───────────────────────────────────────────────────────
 
 
+def _error_with_help(ctx: typer.Context, message: str) -> None:
+    """Print error message followed by relevant help text, then exit."""
+    console.print(f"[red]Error: {message}[/red]\n")
+    console.print(ctx.get_help())
+    raise typer.Exit(1)
+
+
 def _get_source(
     settings: Settings, name: str, trash_folder: str | None = None
 ) -> IMAPSource | MaildirSource | None:
@@ -623,6 +622,7 @@ app.add_typer(audit_app, name="audit")
 
 @audit_app.command("list")
 def audit_list(
+    ctx: typer.Context,
     limit: Annotated[int, typer.Option(help="Max entries to show")] = 20,
     action: Annotated[str | None, typer.Option(help="Filter by action type")] = None,
     email_id: Annotated[str | None, typer.Option(help="Filter by email ID")] = None,
@@ -637,9 +637,8 @@ def audit_list(
         try:
             action_type = ActionType(action)
         except ValueError:
-            console.print(f"[red]Unknown action type: {action}[/red]")
-            console.print(f"Valid types: {', '.join(a.value for a in ActionType)}")
-            raise typer.Exit(1)
+            valid_types = ", ".join(a.value for a in ActionType)
+            _error_with_help(ctx, f"Unknown action type: {action}. Valid types: {valid_types}")
 
     entries = logger.get_history(
         email_id=email_id,
@@ -677,6 +676,7 @@ def audit_list(
 
 @audit_app.command("show")
 def audit_show(
+    ctx: typer.Context,
     entry_id: Annotated[str, typer.Argument(help="Audit entry ID (or prefix)")],
 ) -> None:
     """Show details of an audit entry."""
@@ -693,8 +693,7 @@ def audit_show(
                 break
 
     if not entry:
-        console.print(f"[red]Audit entry not found: {entry_id}[/red]")
-        raise typer.Exit(1)
+        _error_with_help(ctx, f"Audit entry not found: {entry_id}")
 
     console.print(Panel(f"[bold]Audit Entry: {entry.id}[/bold]"))
     console.print(f"[bold]Timestamp:[/bold] {entry.timestamp}")
@@ -715,6 +714,7 @@ def audit_show(
 
 @audit_app.command("export")
 def audit_export(
+    ctx: typer.Context,
     format: Annotated[str, typer.Option(help="Output format: json or csv")] = "json",
     output: Annotated[str | None, typer.Option(help="Output file (default: stdout)")] = None,
     include_dry_run: Annotated[bool, typer.Option(help="Include dry-run entries")] = False,
@@ -724,8 +724,7 @@ def audit_export(
     logger = _get_audit_logger(settings)
 
     if format not in ("json", "csv"):
-        console.print(f"[red]Unknown format: {format}. Use 'json' or 'csv'.[/red]")
-        raise typer.Exit(1)
+        _error_with_help(ctx, f"Unknown format: {format}. Use 'json' or 'csv'")
 
     exported = logger.export_log(format=format, include_dry_run=include_dry_run)  # type: ignore
 
@@ -745,6 +744,7 @@ app.add_typer(draft_app, name="draft")
 
 @draft_app.command("list")
 def draft_list(
+    ctx: typer.Context,
     status: Annotated[str | None, typer.Option(help="Filter by status")] = None,
 ) -> None:
     """List pending draft replies."""
@@ -756,9 +756,8 @@ def draft_list(
             filter_status = DraftStatus(status)
             drafts = {k: v for k, v in drafts.items() if v.status == filter_status}
         except ValueError:
-            console.print(f"[red]Unknown status: {status}[/red]")
-            console.print(f"Valid statuses: {', '.join(s.value for s in DraftStatus)}")
-            raise typer.Exit(1)
+            valid_statuses = ", ".join(s.value for s in DraftStatus)
+            _error_with_help(ctx, f"Unknown status: {status}. Valid statuses: {valid_statuses}")
 
     if not drafts:
         console.print("[yellow]No drafts found.[/yellow]")
@@ -796,6 +795,7 @@ def draft_list(
 
 @draft_app.command("show")
 def draft_show(
+    ctx: typer.Context,
     draft_id: Annotated[str, typer.Argument(help="Draft ID (or prefix)")],
 ) -> None:
     """Show contents of a draft reply."""
@@ -812,8 +812,7 @@ def draft_show(
             break
 
     if not draft or not full_id:
-        console.print(f"[red]Draft not found: {draft_id}[/red]")
-        raise typer.Exit(1)
+        _error_with_help(ctx, f"Draft not found: {draft_id}")
 
     console.print(Panel(f"[bold]Draft Reply: {full_id}[/bold]"))
     console.print(f"[bold]Status:[/bold] {draft.status.value}")
@@ -830,6 +829,7 @@ def draft_show(
 
 @draft_app.command("approve")
 def draft_approve(
+    ctx: typer.Context,
     draft_id: Annotated[str, typer.Argument(help="Draft ID to approve")],
 ) -> None:
     """Approve a draft (marks it ready for sending)."""
@@ -844,8 +844,7 @@ def draft_approve(
             break
 
     if not full_id:
-        console.print(f"[red]Draft not found: {draft_id}[/red]")
-        raise typer.Exit(1)
+        _error_with_help(ctx, f"Draft not found: {draft_id}")
 
     draft = drafts[full_id]
     if draft.status != DraftStatus.PENDING_REVIEW:
@@ -871,6 +870,7 @@ def draft_approve(
 
 @draft_app.command("discard")
 def draft_discard(
+    ctx: typer.Context,
     draft_id: Annotated[str, typer.Argument(help="Draft ID to discard")],
 ) -> None:
     """Discard a draft reply."""
@@ -885,8 +885,7 @@ def draft_discard(
             break
 
     if not full_id:
-        console.print(f"[red]Draft not found: {draft_id}[/red]")
-        raise typer.Exit(1)
+        _error_with_help(ctx, f"Draft not found: {draft_id}")
 
     draft = drafts[full_id]
 
