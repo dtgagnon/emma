@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import Any
 
+import yaml
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -125,4 +126,18 @@ class Settings(BaseSettings):
 
 def load_settings() -> Settings:
     """Load settings from environment and config files."""
-    return Settings()
+    config_dir = Path.home() / ".config" / "emma"
+    config_file = config_dir / "config.yaml"
+
+    file_settings: dict[str, Any] = {}
+    if config_file.exists():
+        with open(config_file) as f:
+            file_settings = yaml.safe_load(f) or {}
+
+    # Expand ~ in paths for maildir_accounts
+    if "maildir_accounts" in file_settings:
+        for name, cfg in file_settings["maildir_accounts"].items():
+            if "path" in cfg and isinstance(cfg["path"], str):
+                cfg["path"] = Path(cfg["path"]).expanduser()
+
+    return Settings(**file_settings)

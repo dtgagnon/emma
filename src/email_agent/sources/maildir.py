@@ -60,20 +60,22 @@ class MaildirSource(EmailSource):
         """Get the filesystem path for a folder."""
         base = self.config.path
 
-        if folder == "INBOX":
-            return base
+        # Try direct subfolder first (Thunderbird/mbsync style)
+        direct = base / folder
+        if direct.exists() and (direct / "cur").exists():
+            return direct
 
-        # Try Maildir++ convention first
+        # For INBOX, fall back to base if no INBOX subfolder
+        if folder == "INBOX":
+            if (base / "cur").exists():
+                return base
+
+        # Try Maildir++ convention (.FolderName)
         maildir_plus = base / f".{folder}"
         if maildir_plus.exists():
             return maildir_plus
 
-        # Try direct subfolder
-        direct = base / folder
-        if direct.exists():
-            return direct
-
-        return maildir_plus  # Default to Maildir++ style
+        return direct  # Default to direct subfolder style
 
     def _generate_email_id(self, path: Path) -> str:
         """Generate a unique ID for an email based on its path."""

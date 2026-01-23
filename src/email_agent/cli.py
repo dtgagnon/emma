@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+import os
+import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -18,11 +21,13 @@ from email_agent.models import ActionType, DraftReply, DraftStatus, Email
 from email_agent.processors.llm import LLMProcessor
 from email_agent.sources.imap import IMAPSource
 from email_agent.sources.maildir import MaildirSource
+from email_agent.tui import select_email
 
 app = typer.Typer(
     name="emma",
     help="Email automation platform with LLM processing and rules engine.",
     no_args_is_help=True,
+    add_completion=False,  # Use custom completion command instead
 )
 console = Console()
 
@@ -164,25 +169,78 @@ def email_list(
 
 @email_app.command("show")
 def email_show(
-    ctx: typer.Context,
-    email_id: Annotated[str, typer.Argument(help="Email ID")],
-    source: Annotated[str, typer.Option(help="Source name")] = "default",
-    folder: Annotated[str, typer.Option(help="Folder")] = "INBOX",
+    source: Annotated[str | None, typer.Argument(help="Source name (optional)")] = None,
+    folder: Annotated[str | None, typer.Argument(help="Folder (optional)")] = None,
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Max emails to fetch")] = 100,
 ) -> None:
-    """Show details of a specific email."""
+    """Interactively browse and view emails.
+
+    Opens an fzf-style selector to fuzzy search and select emails.
+    Falls back to numbered list if fzf is not installed.
+
+    Examples:
+        emma email show                    # All sources, all folders
+        emma email show default            # Specific source, all folders
+        emma email show default INBOX      # Specific source and folder
+    """
     settings = load_settings()
-    email_source = _get_source(settings, source)
-    if not email_source:
-        _error_with_help(ctx, f"Source '{source}' not found")
 
     async def _show() -> None:
-        async with email_source:
-            email = await email_source.get_email(email_id, folder)
-            if not email:
-                console.print(f"[red]Email not found: {email_id}[/red]")
+        emails: list[Email] = []
+
+        # Determine which sources to use
+        if source:
+            # Single source specified
+            email_source = _get_source(settings, source)
+            if not email_source:
+                console.print(f"[red]Source '{source}' not found[/red]")
                 raise typer.Exit(1)
 
-            _display_email(email)
+            async with email_source:
+                if folder:
+                    # Specific folder
+                    async for email in email_source.fetch_emails(folder=folder, limit=limit):
+                        emails.append(email)
+                else:
+                    # All folders in this source
+                    folders = await email_source.list_folders()
+                    per_folder_limit = max(1, limit // len(folders)) if folders else limit
+                    for f in folders:
+                        async for email in email_source.fetch_emails(folder=f, limit=per_folder_limit):
+                            emails.append(email)
+        else:
+            # All configured sources
+            source_names = list(settings.imap_accounts.keys()) + list(settings.maildir_accounts.keys())
+            if not source_names:
+                console.print("[yellow]No email sources configured.[/yellow]")
+                console.print("Configure sources in ~/.config/emma/config.yaml")
+                raise typer.Exit(1)
+
+            per_source_limit = max(1, limit // len(source_names))
+            for src_name in source_names:
+                email_source = _get_source(settings, src_name)
+                if email_source:
+                    async with email_source:
+                        folders = await email_source.list_folders()
+                        per_folder_limit = max(1, per_source_limit // len(folders)) if folders else per_source_limit
+                        for f in folders:
+                            async for email in email_source.fetch_emails(folder=f, limit=per_folder_limit):
+                                emails.append(email)
+
+        if not emails:
+            console.print("[yellow]No emails found.[/yellow]")
+            raise typer.Exit(0)
+
+        # Sort by date, newest first
+        emails.sort(key=lambda e: e.date or datetime.min, reverse=True)
+
+        # Trim to limit
+        emails = emails[:limit]
+
+        # Interactive selection
+        selected = select_email(emails)
+        if selected:
+            _display_email(selected)
 
     asyncio.run(_show())
 
@@ -557,6 +615,194 @@ llm:
         console.print(f"Config file already exists: {config_file}")
 
     console.print(f"[green]Configuration initialized at {settings.config_dir}[/green]")
+
+
+# ─── Completion Commands ─────────────────────────────────────────────────────
+
+
+completion_app = typer.Typer(help="Shell completion management", no_args_is_help=True)
+app.add_typer(completion_app, name="completion")
+
+# Shells supported natively by typer
+TYPER_SUPPORTED_SHELLS = {"bash", "zsh", "fish", "powershell", "pwsh"}
+
+
+def _detect_shell() -> str:
+    """Detect the current shell."""
+    shell = os.environ.get("SHELL", "")
+    if shell:
+        return Path(shell).name
+    # Fallback for Windows
+    if os.name == "nt":
+        return "powershell"
+    return "unknown"
+
+
+def _get_carapace_spec_path() -> Path | None:
+    """Get the path to the bundled carapace spec file."""
+    # Check relative to this module (for installed package)
+    module_dir = Path(__file__).parent
+    spec_locations = [
+        module_dir / "completions" / "emma.yaml",
+        module_dir.parent.parent / "completions" / "emma.yaml",  # dev layout
+    ]
+    for path in spec_locations:
+        if path.exists():
+            return path
+    return None
+
+
+def _install_carapace_completion(shell: str) -> bool:
+    """Install completion using carapace."""
+    carapace_bin = shutil.which("carapace")
+    if not carapace_bin:
+        return False
+
+    spec_path = _get_carapace_spec_path()
+    if not spec_path:
+        console.print("[yellow]Carapace spec file not found in package.[/yellow]")
+        console.print("You can manually create it at ~/.config/carapace/specs/emma.yaml")
+        return False
+
+    # Copy spec to carapace's spec directory
+    carapace_spec_dir = Path.home() / ".config" / "carapace" / "specs"
+    carapace_spec_dir.mkdir(parents=True, exist_ok=True)
+    target_spec = carapace_spec_dir / "emma.yaml"
+
+    shutil.copy(spec_path, target_spec)
+    console.print(f"[green]Installed carapace spec to {target_spec}[/green]")
+
+    # Show shell-specific activation instructions
+    console.print(f"\n[bold]To activate completions for {shell}:[/bold]")
+    if shell in ("nu", "nushell"):
+        console.print("Add to your config.nu:")
+        console.print('  source ~/.cache/carapace/init.nu')
+        console.print("\nOr run: carapace _carapace nushell | save -f ~/.cache/carapace/init.nu")
+    elif shell == "elvish":
+        console.print("Add to your rc.elv:")
+        console.print('  eval (carapace _carapace elvish | slurp)')
+    elif shell == "xonsh":
+        console.print("Add to your .xonshrc:")
+        console.print('  exec($(carapace _carapace xonsh))')
+    elif shell == "tcsh":
+        console.print("Add to your .tcshrc:")
+        console.print('  eval `carapace _carapace tcsh`')
+    else:
+        console.print(f"Run: carapace _carapace {shell}")
+
+    return True
+
+
+@completion_app.command("install")
+def completion_install(
+    shell: Annotated[str | None, typer.Option(help="Shell to install completion for")] = None,
+) -> None:
+    """Install shell completions.
+
+    Automatically detects your shell. Uses typer's built-in completion for
+    bash/zsh/fish/powershell, falls back to carapace for other shells (nu, elvish, etc).
+    """
+    detected_shell = shell or _detect_shell()
+
+    if detected_shell == "unknown":
+        console.print("[red]Could not detect shell.[/red]")
+        console.print("Specify explicitly with: emma completion install --shell <shell>")
+        raise typer.Exit(1)
+
+    console.print(f"Detected shell: [cyan]{detected_shell}[/cyan]")
+
+    # Try typer's built-in completion for supported shells
+    if detected_shell in TYPER_SUPPORTED_SHELLS:
+        try:
+            # Use typer's completion installation
+            import click.shell_completion
+
+            shell_map = {
+                "bash": "bash",
+                "zsh": "zsh",
+                "fish": "fish",
+                "powershell": "powershell",
+                "pwsh": "powershell",
+            }
+            shell_name = shell_map.get(detected_shell, detected_shell)
+
+            # Get completion script
+            from typer import main as typer_main
+
+            shell_complete = click.shell_completion.get_completion_class(shell_name)
+            if shell_complete:
+                comp = shell_complete(app, {}, "emma", "_EMMA_COMPLETE")
+                script = comp.source()
+                console.print(f"\n[bold]Add this to your shell config:[/bold]\n")
+                console.print(script)
+                return
+        except Exception as e:
+            console.print(f"[yellow]Typer completion failed: {e}[/yellow]")
+
+    # Fall back to carapace for unsupported shells
+    console.print(f"[yellow]Shell '{detected_shell}' not supported by typer.[/yellow]")
+    console.print("Checking for carapace...")
+
+    if shutil.which("carapace"):
+        if _install_carapace_completion(detected_shell):
+            return
+    else:
+        console.print("[red]carapace not found in PATH.[/red]")
+        console.print("\nTo get completions for this shell, install carapace:")
+        console.print("  https://carapace.sh")
+        console.print("\nOr use a supported shell: bash, zsh, fish, powershell")
+
+    raise typer.Exit(1)
+
+
+@completion_app.command("show")
+def completion_show(
+    shell: Annotated[str | None, typer.Option(help="Shell to show completion for")] = None,
+) -> None:
+    """Show the completion script without installing."""
+    detected_shell = shell or _detect_shell()
+
+    if detected_shell in TYPER_SUPPORTED_SHELLS:
+        try:
+            import click.shell_completion
+
+            shell_map = {
+                "bash": "bash",
+                "zsh": "zsh",
+                "fish": "fish",
+                "powershell": "powershell",
+                "pwsh": "powershell",
+            }
+            shell_name = shell_map.get(detected_shell, detected_shell)
+            shell_complete = click.shell_completion.get_completion_class(shell_name)
+            if shell_complete:
+                comp = shell_complete(app, {}, "emma", "_EMMA_COMPLETE")
+                console.print(comp.source())
+                return
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(1)
+
+    # For other shells, show carapace command
+    if shutil.which("carapace"):
+        spec_path = _get_carapace_spec_path()
+        if spec_path:
+            try:
+                result = subprocess.run(
+                    ["carapace", "emma", "export", "--spec", str(spec_path), detected_shell],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    console.print(result.stdout)
+                    return
+                else:
+                    console.print(f"[red]carapace error: {result.stderr}[/red]")
+            except Exception as e:
+                console.print(f"[red]Error running carapace: {e}[/red]")
+
+    console.print(f"[red]Cannot generate completion for shell: {detected_shell}[/red]")
+    raise typer.Exit(1)
 
 
 # ─── Helper Functions ───────────────────────────────────────────────────────

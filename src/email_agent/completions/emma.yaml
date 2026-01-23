@@ -1,0 +1,193 @@
+name: emma
+description: Email automation platform with LLM processing and rules engine
+flags:
+  --help: Show this message and exit
+  -v, --version: Show version and exit
+
+commands:
+  - name: source
+    description: Manage email sources
+    commands:
+      - name: list
+        description: List configured email sources
+        flags:
+          --help: Show help
+
+      - name: test
+        description: Test connection to an email source
+        flags:
+          --help: Show help
+          --host: IMAP host
+          --port=: IMAP port
+          --username: IMAP username
+          --password: IMAP password
+          --path: Maildir path
+        completion:
+          positional:
+            - - imap
+              - maildir
+
+  - name: email
+    description: Email operations
+    commands:
+      - name: list
+        description: List emails from a source
+        flags:
+          --help: Show help
+          --source=: Source name
+          --folder=: Folder to list
+          --limit=: Max emails to show
+
+      - name: show
+        description: Show details of a specific email
+        flags:
+          --help: Show help
+          --source=: Source name
+          --folder=: Folder
+        completion:
+          positional:
+            - - $carapace.bridge.Noop
+
+      - name: delete
+        description: Delete an email (moves to Trash by default)
+        flags:
+          --help: Show help
+          --source=: Source name
+          --folder=: Folder
+          --permanent: Permanently delete (skip Trash)
+          --execute: Actually perform the delete
+        completion:
+          positional:
+            - - $carapace.bridge.Noop
+
+      - name: move
+        description: Move an email to another folder
+        flags:
+          --help: Show help
+          --source=: Source name
+          --from-folder=: Source folder
+          --execute: Actually perform the move
+        completion:
+          positional:
+            - - $carapace.bridge.Noop
+            - - $carapace.bridge.Noop
+
+  - name: analyze
+    description: LLM-powered email analysis
+    commands:
+      - name: email
+        description: Analyze an email using LLM
+        flags:
+          --help: Show help
+          --source=: Source name
+          --folder=: Folder
+        completion:
+          positional:
+            - - $carapace.bridge.Noop
+
+      - name: summarize
+        description: Generate a summary of an email
+        flags:
+          --help: Show help
+          --source=: Source name
+          --folder=: Folder
+        completion:
+          positional:
+            - - $carapace.bridge.Noop
+
+      - name: draft-reply
+        description: Draft a reply to an email
+        flags:
+          --help: Show help
+          --source=: Source name
+          --folder=: Folder
+          --instructions=: Reply instructions
+        completion:
+          positional:
+            - - $carapace.bridge.Noop
+
+  - name: config
+    description: Configuration management
+    commands:
+      - name: show
+        description: Show current configuration
+        flags:
+          --help: Show help
+
+      - name: init
+        description: Initialize configuration directory
+        flags:
+          --help: Show help
+
+  - name: audit
+    description: View audit log of email operations
+    commands:
+      - name: list
+        description: List recent audit log entries
+        flags:
+          --help: Show help
+          --limit=: Max entries to show
+          --action=: Filter by action type
+          --email-id=: Filter by email ID
+          --include-dry-run: Include dry-run entries
+
+      - name: show
+        description: Show details of an audit entry
+        flags:
+          --help: Show help
+        completion:
+          positional:
+            - - $carapace.bridge.Noop
+
+      - name: export
+        description: Export audit log to file
+        flags:
+          --help: Show help
+          --format=: Output format (json or csv)
+          --output=: Output file
+          --include-dry-run: Include dry-run entries
+        completion:
+          flag:
+            format:
+              - json
+              - csv
+
+  - name: draft
+    description: Manage draft replies
+    commands:
+      - name: list
+        description: List pending draft replies
+        flags:
+          --help: Show help
+          --status=: Filter by status
+        completion:
+          flag:
+            status:
+              - pending_review
+              - approved
+              - discarded
+              - sent
+
+      - name: show
+        description: Show contents of a draft reply
+        flags:
+          --help: Show help
+        completion:
+          positional:
+            - - $carapace.bridge.Noop
+
+      - name: approve
+        description: Approve a draft (marks it ready for sending)
+        flags:
+          --help: Show help
+        completion:
+          positional:
+            - - $carapace.bridge.Noop
+
+      - name: discard
+        description: Discard a draft reply
+        flags:
+          --help: Show help
+        completion:
+          positional:
+            - - $carapace.bridge.Noop
