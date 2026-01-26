@@ -173,15 +173,42 @@ class Settings(BaseSettings):
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
 
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Deep merge two dictionaries, with override taking precedence.
+
+    Nested dicts are merged recursively. Lists and other values are replaced.
+    """
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
 def load_settings() -> Settings:
-    """Load settings from environment and config files."""
+    """Load settings from environment and config files.
+
+    Loads config.yaml first (nix-managed), then merges config.local.yaml
+    on top if it exists (user-editable overrides).
+    """
     config_dir = Path.home() / ".config" / "emma"
     config_file = config_dir / "config.yaml"
+    local_config_file = config_dir / "config.local.yaml"
 
     file_settings: dict[str, Any] = {}
+
+    # Load base config (may be nix-managed/symlinked)
     if config_file.exists():
         with open(config_file) as f:
             file_settings = yaml.safe_load(f) or {}
+
+    # Load and merge local overrides (user-editable)
+    if local_config_file.exists():
+        with open(local_config_file) as f:
+            local_settings = yaml.safe_load(f) or {}
+        file_settings = _deep_merge(file_settings, local_settings)
 
     # Expand ~ in paths for maildir_accounts
     if "maildir_accounts" in file_settings:
