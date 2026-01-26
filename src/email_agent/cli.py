@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
+import click
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -24,13 +25,32 @@ from email_agent.sources.maildir import MaildirSource
 from email_agent.tui import select_email
 from email_agent.models import ActionItemStatus, EmailPriority
 
+console = Console()
+
+
+class HelpOnUnknownGroup(typer.core.TyperGroup):
+    """Custom Typer Group that shows help text when an unknown command is entered."""
+
+    def resolve_command(
+        self, ctx: click.Context, args: list[str]
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError as e:
+            if "No such command" in str(e):
+                console.print(f"[red]Error: {e.format_message()}[/red]\n")
+                console.print(ctx.get_help())
+                ctx.exit(1)
+            raise
+
+
 app = typer.Typer(
     name="emma",
     help="Email automation platform with LLM processing and rules engine.",
     no_args_is_help=True,
     add_completion=False,  # Use custom completion command instead
+    cls=HelpOnUnknownGroup,
 )
-console = Console()
 
 
 def version_callback(value: bool) -> None:
@@ -53,7 +73,7 @@ def main(
 # ─── Source Commands ────────────────────────────────────────────────────────
 
 
-source_app = typer.Typer(help="Manage email sources", no_args_is_help=True)
+source_app = typer.Typer(help="Manage email sources", no_args_is_help=True, cls=HelpOnUnknownGroup)
 app.add_typer(source_app, name="source")
 
 
@@ -128,7 +148,7 @@ def source_test(
 # ─── Email Commands ─────────────────────────────────────────────────────────
 
 
-email_app = typer.Typer(help="Email operations", no_args_is_help=True)
+email_app = typer.Typer(help="Email operations", no_args_is_help=True, cls=HelpOnUnknownGroup)
 app.add_typer(email_app, name="email")
 
 
@@ -421,7 +441,7 @@ def _display_email(email: Email) -> None:
 # ─── Analyze Commands ───────────────────────────────────────────────────────
 
 
-analyze_app = typer.Typer(help="LLM-powered email analysis", no_args_is_help=True)
+analyze_app = typer.Typer(help="LLM-powered email analysis", no_args_is_help=True, cls=HelpOnUnknownGroup)
 app.add_typer(analyze_app, name="analyze")
 
 
@@ -608,7 +628,7 @@ def analyze_draft_reply(
 # ─── Config Commands ────────────────────────────────────────────────────────
 
 
-config_app = typer.Typer(help="Configuration management", no_args_is_help=True)
+config_app = typer.Typer(help="Configuration management", no_args_is_help=True, cls=HelpOnUnknownGroup)
 app.add_typer(config_app, name="config")
 
 
@@ -693,7 +713,7 @@ llm:
 # ─── Completion Commands ─────────────────────────────────────────────────────
 
 
-completion_app = typer.Typer(help="Shell completion management", no_args_is_help=True)
+completion_app = typer.Typer(help="Shell completion management", no_args_is_help=True, cls=HelpOnUnknownGroup)
 app.add_typer(completion_app, name="completion")
 
 # Shells supported natively by typer
@@ -935,7 +955,7 @@ def _save_drafts(settings: Settings, drafts: dict[str, DraftReply]) -> None:
 # ─── Audit Commands ─────────────────────────────────────────────────────────
 
 
-audit_app = typer.Typer(help="View audit log of email operations", no_args_is_help=True)
+audit_app = typer.Typer(help="View audit log of email operations", no_args_is_help=True, cls=HelpOnUnknownGroup)
 app.add_typer(audit_app, name="audit")
 
 
@@ -1057,7 +1077,7 @@ def audit_export(
 # ─── Draft Commands ─────────────────────────────────────────────────────────
 
 
-draft_app = typer.Typer(help="Manage draft replies", no_args_is_help=True)
+draft_app = typer.Typer(help="Manage draft replies", no_args_is_help=True, cls=HelpOnUnknownGroup)
 app.add_typer(draft_app, name="draft")
 
 
@@ -1227,7 +1247,7 @@ def draft_discard(
 # ─── Service Commands ────────────────────────────────────────────────────────
 
 
-service_app = typer.Typer(help="Manage Emma background service", no_args_is_help=True)
+service_app = typer.Typer(help="Manage Emma background service", no_args_is_help=True, cls=HelpOnUnknownGroup)
 app.add_typer(service_app, name="service")
 
 
@@ -1350,7 +1370,7 @@ def service_run_once(
 # ─── Digest Commands ─────────────────────────────────────────────────────────
 
 
-digest_app = typer.Typer(help="Manage email digests", no_args_is_help=True)
+digest_app = typer.Typer(help="Manage email digests", no_args_is_help=True, cls=HelpOnUnknownGroup)
 app.add_typer(digest_app, name="digest")
 
 
@@ -1491,7 +1511,7 @@ def digest_show(
 # ─── Action Item Commands ────────────────────────────────────────────────────
 
 
-actions_app = typer.Typer(help="Manage action items extracted from emails", no_args_is_help=True)
+actions_app = typer.Typer(help="Manage action items extracted from emails", no_args_is_help=True, cls=HelpOnUnknownGroup)
 app.add_typer(actions_app, name="actions")
 
 
