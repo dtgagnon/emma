@@ -249,16 +249,19 @@ def email_show(
 @email_app.command("delete")
 def email_delete(
     ctx: typer.Context,
-    email_id: Annotated[str, typer.Argument(help="Email ID to delete")],
+    email_id: Annotated[str | None, typer.Argument(help="Email ID (optional, opens selector if omitted)")] = None,
     source: Annotated[str, typer.Option(help="Source name")] = "default",
     folder: Annotated[str, typer.Option(help="Folder")] = "INBOX",
     permanent: Annotated[bool, typer.Option("--permanent", help="Permanently delete (skip Trash)")] = False,
     execute: Annotated[bool, typer.Option("--execute", help="Actually perform the delete")] = False,
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Max emails in selector")] = 100,
 ) -> None:
     """Delete an email (moves to Trash by default).
 
     Without --execute, shows what would happen (dry-run).
     Use --permanent to skip Trash and permanently delete.
+
+    If no email ID is provided, opens an interactive selector.
     """
     settings = load_settings()
     email_source = _get_source(settings, source)
@@ -267,10 +270,21 @@ def email_delete(
 
     async def _delete() -> None:
         async with email_source:
-            email = await email_source.get_email(email_id, folder)
-            if not email:
-                console.print(f"[red]Email not found: {email_id}[/red]")
-                raise typer.Exit(1)
+            # Interactive selection if no email_id provided
+            if email_id:
+                email = await email_source.get_email(email_id, folder)
+                if not email:
+                    console.print(f"[red]Email not found: {email_id}[/red]")
+                    raise typer.Exit(1)
+            else:
+                emails = [e async for e in email_source.fetch_emails(folder=folder, limit=limit)]
+                if not emails:
+                    console.print("[yellow]No emails found.[/yellow]")
+                    raise typer.Exit(0)
+                emails.sort(key=lambda e: e.date or datetime.min, reverse=True)
+                email = select_email(emails)
+                if not email:
+                    raise typer.Exit(0)
 
             if permanent:
                 action_desc = "permanently delete"
@@ -283,13 +297,13 @@ def email_delete(
                 console.print(f"  Subject: {email.subject}")
                 console.print(f"  From: {email.from_addr}")
                 console.print(f"  Action: {action_desc}")
-                console.print(f"\nTo execute, run: emma email delete {email_id} --execute")
+                console.print(f"\nTo execute, run: emma email delete {email.id} --execute")
                 if not permanent:
-                    console.print(f"To permanently delete: emma email delete {email_id} --permanent --execute")
+                    console.print(f"To permanently delete: emma email delete {email.id} --permanent --execute")
                 return
 
             # Execute delete
-            success = await email_source.delete_email(email_id, folder, permanent=permanent)
+            success = await email_source.delete_email(email.id, folder, permanent=permanent)
 
             if success:
                 console.print(f"[green]Email deleted ({action_desc})[/green]")
@@ -306,7 +320,7 @@ def email_delete(
                         details={"permanent": permanent},
                     )
             else:
-                console.print(f"[red]Failed to delete email[/red]")
+                console.print("[red]Failed to delete email[/red]")
                 raise typer.Exit(1)
 
     asyncio.run(_delete())
@@ -315,15 +329,18 @@ def email_delete(
 @email_app.command("move")
 def email_move(
     ctx: typer.Context,
-    email_id: Annotated[str, typer.Argument(help="Email ID to move")],
     to_folder: Annotated[str, typer.Argument(help="Destination folder")],
+    email_id: Annotated[str | None, typer.Argument(help="Email ID (optional, opens selector if omitted)")] = None,
     source: Annotated[str, typer.Option(help="Source name")] = "default",
     from_folder: Annotated[str, typer.Option(help="Source folder")] = "INBOX",
     execute: Annotated[bool, typer.Option("--execute", help="Actually perform the move")] = False,
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Max emails in selector")] = 100,
 ) -> None:
     """Move an email to another folder.
 
     Without --execute, shows what would happen (dry-run).
+
+    If no email ID is provided, opens an interactive selector.
     """
     settings = load_settings()
     email_source = _get_source(settings, source)
@@ -332,10 +349,21 @@ def email_move(
 
     async def _move() -> None:
         async with email_source:
-            email = await email_source.get_email(email_id, from_folder)
-            if not email:
-                console.print(f"[red]Email not found: {email_id}[/red]")
-                raise typer.Exit(1)
+            # Interactive selection if no email_id provided
+            if email_id:
+                email = await email_source.get_email(email_id, from_folder)
+                if not email:
+                    console.print(f"[red]Email not found: {email_id}[/red]")
+                    raise typer.Exit(1)
+            else:
+                emails = [e async for e in email_source.fetch_emails(folder=from_folder, limit=limit)]
+                if not emails:
+                    console.print("[yellow]No emails found.[/yellow]")
+                    raise typer.Exit(0)
+                emails.sort(key=lambda e: e.date or datetime.min, reverse=True)
+                email = select_email(emails)
+                if not email:
+                    raise typer.Exit(0)
 
             if not execute:
                 # Dry run
@@ -343,11 +371,11 @@ def email_move(
                 console.print(f"  Subject: {email.subject}")
                 console.print(f"  From folder: {from_folder}")
                 console.print(f"  To folder: {to_folder}")
-                console.print(f"\nTo execute, run: emma email move {email_id} {to_folder} --execute")
+                console.print(f"\nTo execute, run: emma email move {to_folder} {email.id} --execute")
                 return
 
             # Execute move
-            success = await email_source.move_email(email_id, from_folder, to_folder)
+            success = await email_source.move_email(email.id, from_folder, to_folder)
 
             if success:
                 console.print(f"[green]Email moved to {to_folder}[/green]")
@@ -363,7 +391,7 @@ def email_move(
                         target_folder=to_folder,
                     )
             else:
-                console.print(f"[red]Failed to move email[/red]")
+                console.print("[red]Failed to move email[/red]")
                 raise typer.Exit(1)
 
     asyncio.run(_move())
@@ -411,11 +439,15 @@ def _create_processor(settings: Settings) -> LLMProcessor:
 @analyze_app.command("email")
 def analyze_email(
     ctx: typer.Context,
-    email_id: Annotated[str, typer.Argument(help="Email ID to analyze")],
+    email_id: Annotated[str | None, typer.Argument(help="Email ID (optional, opens selector if omitted)")] = None,
     source: Annotated[str, typer.Option(help="Source name")] = "default",
     folder: Annotated[str, typer.Option(help="Folder")] = "INBOX",
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Max emails in selector")] = 100,
 ) -> None:
-    """Analyze an email using LLM."""
+    """Analyze an email using LLM.
+
+    If no email ID is provided, opens an interactive selector.
+    """
     settings = load_settings()
     _check_llm_config(settings, ctx)
     email_source = _get_source(settings, source)
@@ -424,10 +456,21 @@ def analyze_email(
 
     async def _analyze() -> None:
         async with email_source:
-            email = await email_source.get_email(email_id, folder)
-            if not email:
-                console.print(f"[red]Email not found: {email_id}[/red]")
-                raise typer.Exit(1)
+            # Interactive selection if no email_id provided
+            if email_id:
+                email = await email_source.get_email(email_id, folder)
+                if not email:
+                    console.print(f"[red]Email not found: {email_id}[/red]")
+                    raise typer.Exit(1)
+            else:
+                emails = [e async for e in email_source.fetch_emails(folder=folder, limit=limit)]
+                if not emails:
+                    console.print("[yellow]No emails found.[/yellow]")
+                    raise typer.Exit(0)
+                emails.sort(key=lambda e: e.date or datetime.min, reverse=True)
+                email = select_email(emails)
+                if not email:
+                    raise typer.Exit(0)
 
             console.print(f"Analyzing email: {email.subject[:50]}...")
             processor = _create_processor(settings)
@@ -443,11 +486,15 @@ def analyze_email(
 @analyze_app.command("summarize")
 def analyze_summarize(
     ctx: typer.Context,
-    email_id: Annotated[str, typer.Argument(help="Email ID")],
+    email_id: Annotated[str | None, typer.Argument(help="Email ID (optional, opens selector if omitted)")] = None,
     source: Annotated[str, typer.Option(help="Source name")] = "default",
     folder: Annotated[str, typer.Option(help="Folder")] = "INBOX",
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Max emails in selector")] = 100,
 ) -> None:
-    """Generate a summary of an email."""
+    """Generate a summary of an email.
+
+    If no email ID is provided, opens an interactive selector.
+    """
     settings = load_settings()
     _check_llm_config(settings, ctx)
     email_source = _get_source(settings, source)
@@ -456,10 +503,21 @@ def analyze_summarize(
 
     async def _summarize() -> None:
         async with email_source:
-            email = await email_source.get_email(email_id, folder)
-            if not email:
-                console.print(f"[red]Email not found: {email_id}[/red]")
-                raise typer.Exit(1)
+            # Interactive selection if no email_id provided
+            if email_id:
+                email = await email_source.get_email(email_id, folder)
+                if not email:
+                    console.print(f"[red]Email not found: {email_id}[/red]")
+                    raise typer.Exit(1)
+            else:
+                emails = [e async for e in email_source.fetch_emails(folder=folder, limit=limit)]
+                if not emails:
+                    console.print("[yellow]No emails found.[/yellow]")
+                    raise typer.Exit(0)
+                emails.sort(key=lambda e: e.date or datetime.min, reverse=True)
+                email = select_email(emails)
+                if not email:
+                    raise typer.Exit(0)
 
             console.print(f"Summarizing: {email.subject[:50]}...")
             processor = _create_processor(settings)
@@ -473,15 +531,18 @@ def analyze_summarize(
 @analyze_app.command("draft-reply")
 def analyze_draft_reply(
     ctx: typer.Context,
-    email_id: Annotated[str, typer.Argument(help="Email ID")],
+    email_id: Annotated[str | None, typer.Argument(help="Email ID (optional, opens selector if omitted)")] = None,
     instructions: Annotated[str, typer.Option(help="Reply instructions")] = "",
     source: Annotated[str, typer.Option(help="Source name")] = "default",
     folder: Annotated[str, typer.Option(help="Folder")] = "INBOX",
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Max emails in selector")] = 100,
 ) -> None:
     """Draft a reply to an email.
 
     Creates a draft that must be reviewed and approved before sending.
     Use 'emma draft list' to see pending drafts.
+
+    If no email ID is provided, opens an interactive selector.
     """
     settings = load_settings()
     _check_llm_config(settings, ctx)
@@ -491,10 +552,21 @@ def analyze_draft_reply(
 
     async def _draft() -> None:
         async with email_source:
-            email = await email_source.get_email(email_id, folder)
-            if not email:
-                console.print(f"[red]Email not found: {email_id}[/red]")
-                raise typer.Exit(1)
+            # Interactive selection if no email_id provided
+            if email_id:
+                email = await email_source.get_email(email_id, folder)
+                if not email:
+                    console.print(f"[red]Email not found: {email_id}[/red]")
+                    raise typer.Exit(1)
+            else:
+                emails = [e async for e in email_source.fetch_emails(folder=folder, limit=limit)]
+                if not emails:
+                    console.print("[yellow]No emails found.[/yellow]")
+                    raise typer.Exit(0)
+                emails.sort(key=lambda e: e.date or datetime.min, reverse=True)
+                email = select_email(emails)
+                if not email:
+                    raise typer.Exit(0)
 
             console.print(f"Drafting reply to: {email.subject[:50]}...")
             processor = _create_processor(settings)
