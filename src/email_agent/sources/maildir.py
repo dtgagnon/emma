@@ -60,14 +60,15 @@ class MaildirSource(EmailSource):
         self, config: MaildirConfig, name: str | None = None, trash_folder: str = "Trash"
     ) -> None:
         self.config = config
-        self.name = name or config.account_name
+        self.name = name or config.resolved_account_name
         self.trash_folder = trash_folder
         self._connected = False
 
     async def connect(self) -> None:
         """Verify maildir exists."""
-        if not self.config.path.exists():
-            raise FileNotFoundError(f"Maildir path does not exist: {self.config.path}")
+        path = self.config.resolved_path
+        if not path.exists():
+            raise FileNotFoundError(f"Maildir path does not exist: {path}")
         self._connected = True
 
     async def disconnect(self) -> None:
@@ -77,7 +78,7 @@ class MaildirSource(EmailSource):
     async def list_folders(self) -> list[str]:
         """List available folders in the Maildir."""
         folders = ["INBOX"]
-        base = self.config.path
+        base = self.config.resolved_path
 
         # Standard Maildir++ convention: .FolderName
         for item in base.iterdir():
@@ -96,7 +97,7 @@ class MaildirSource(EmailSource):
 
     def _get_folder_path(self, folder: str) -> Path:
         """Get the filesystem path for a folder."""
-        base = self.config.path
+        base = self.config.resolved_path
 
         # Try direct subfolder first (Thunderbird/mbsync style)
         direct = base / folder

@@ -45,8 +45,6 @@ def _format_email_line(idx: int, email: Email) -> str:
     date_str = email.date.strftime("%Y-%m-%d %H:%M") if email.date else "Unknown"
     from_addr = _sanitize_for_fzf(email.from_addr)
     subject = _sanitize_for_fzf(email.subject)
-    from_addr = from_addr[:30] if len(from_addr) > 30 else from_addr
-    subject = subject[:60] if len(subject) > 60 else subject
     return f"{idx}\t{date_str}\t{from_addr}\t{subject}"
 
 

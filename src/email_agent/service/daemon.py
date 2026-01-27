@@ -43,7 +43,11 @@ class EmmaService:
         if settings.llm:
             try:
                 api_key = settings.anthropic_api_key if settings.llm.provider == "anthropic" else None
-                self.llm_processor = LLMProcessor(settings.llm, api_key)
+                self.llm_processor = LLMProcessor(
+                    settings.llm,
+                    api_key,
+                    user_email_lookup=settings.get_user_email_for_source,
+                )
             except Exception as e:
                 logger.warning(f"Could not initialize LLM processor: {e}")
 

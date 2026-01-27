@@ -90,8 +90,11 @@ def source_list() -> None:
     for name, cfg in settings.imap_accounts.items():
         table.add_row(name, "IMAP", f"{cfg.host}:{cfg.port}")
 
-    for name, cfg in settings.maildir_accounts.items():
-        table.add_row(name, "Maildir", str(cfg.path))
+    for email, cfg in settings.maildir_accounts.items():
+        name = cfg.resolved_account_name
+        if cfg.default:
+            name = f"{name} (default)"
+        table.add_row(name, "Maildir", f"{email} → {cfg.resolved_path}")
 
     if settings.mxroute.enabled:
         table.add_row("mxroute", "MCP", settings.mxroute.domain or "all domains")
@@ -453,7 +456,11 @@ def _check_llm_config(settings: Settings, ctx: typer.Context) -> None:
 
 def _create_processor(settings: Settings) -> LLMProcessor:
     """Create LLM processor with appropriate config."""
-    return LLMProcessor(settings.llm, settings.anthropic_api_key)
+    return LLMProcessor(
+        settings.llm,
+        settings.anthropic_api_key,
+        user_email_lookup=settings.get_user_email_for_source,
+    )
 
 
 @analyze_app.command("email")
@@ -909,14 +916,37 @@ def _error_with_help(ctx: typer.Context, message: str) -> None:
 
 
 def _get_source(
-    settings: Settings, name: str, trash_folder: str | None = None
+    settings: Settings, name: str | None = None, trash_folder: str | None = None
 ) -> IMAPSource | MaildirSource | None:
-    """Get an email source by name."""
+    """Get an email source by account name.
+
+    Args:
+        settings: Application settings
+        name: Account name (e.g., "protonmail", "work"). If None, uses default.
+        trash_folder: Override trash folder path
+
+    Returns:
+        The email source, or None if not found
+    """
     trash = trash_folder or settings.guardrails.trash_folder
+
+    # Use default if no name specified
+    if name is None:
+        default = settings.get_default_maildir()
+        if default:
+            _, cfg = default
+            return MaildirSource(cfg, trash_folder=trash)
+        return None
+
+    # Look up by account name
     if name in settings.imap_accounts:
-        return IMAPSource(settings.imap_accounts[name], name=name, trash_folder=trash)
-    if name in settings.maildir_accounts:
-        return MaildirSource(settings.maildir_accounts[name], name=name, trash_folder=trash)
+        return IMAPSource(settings.imap_accounts[name], trash_folder=trash)
+
+    # Check maildir by resolved_account_name
+    cfg = settings.get_maildir_by_account_name(name)
+    if cfg:
+        return MaildirSource(cfg, trash_folder=trash)
+
     return None
 
 
@@ -1394,7 +1424,11 @@ def digest_generate(
     if settings.llm:
         try:
             api_key = settings.anthropic_api_key if settings.llm.provider == "anthropic" else None
-            llm_processor = LLMProcessor(settings.llm, api_key)
+            llm_processor = LLMProcessor(
+                settings.llm,
+                api_key,
+                user_email_lookup=settings.get_user_email_for_source,
+            )
         except Exception:
             pass
 

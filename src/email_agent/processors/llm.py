@@ -3,6 +3,7 @@
 import json
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import Any
 
 import uuid
@@ -82,9 +83,23 @@ def create_llm_client(config: LLMConfig, api_key: str | None = None) -> LLMClien
 class LLMProcessor:
     """Process emails using LLM for classification, summarization, and analysis."""
 
-    def __init__(self, config: LLMConfig, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        config: LLMConfig,
+        api_key: str | None = None,
+        user_email_lookup: "Callable[[str], str | None] | None" = None,
+    ) -> None:
+        """Initialize the LLM processor.
+
+        Args:
+            config: LLM configuration
+            api_key: API key for Anthropic (if using that provider)
+            user_email_lookup: Optional callback to get user's email for a source name.
+                               Called with source name, returns user's email address or None.
+        """
         self.config = config
         self.client = create_llm_client(config, api_key)
+        self._user_email_lookup = user_email_lookup
 
     def _chat(self, prompt: str, max_tokens: int | None = None, temperature: float | None = None) -> str:
         """Send a chat message and get the response."""
@@ -93,6 +108,12 @@ class LLMProcessor:
             max_tokens=max_tokens or self.config.max_tokens,
             temperature=temperature if temperature is not None else self.config.temperature,
         )
+
+    def _get_user_email(self, email: Email) -> str | None:
+        """Get the user's email address for the account that received this email."""
+        if self._user_email_lookup:
+            return self._user_email_lookup(email.source)
+        return None
 
     def _build_email_context(self, email: Email, task: str) -> str:
         """Build task-appropriate context string for LLM processing.
@@ -114,6 +135,11 @@ class LLMProcessor:
             Formatted context string optimized for the task
         """
         parts = []
+
+        # User identity context - helps LLM understand perspective
+        user_email = self._get_user_email(email)
+        if user_email and task in ("analyze", "extract_actions", "priority", "draft_reply"):
+            parts.append(f"[User's email: {user_email}]")
 
         # From address - always include but simplify for some tasks
         if task == "classify":
@@ -187,13 +213,25 @@ class LLMProcessor:
         - key_points: Main points from the email
         """
         context = self._build_email_context(email, "analyze")
+        user_email = self._get_user_email(email)
+
+        # Build perspective-aware instructions
+        if user_email:
+            perspective_hint = f"""
+The user's email address is shown in brackets above. Use it to determine:
+- If From matches the user's address: the user SENT this email (action_required=false, no suggested_response needed)
+- If To/CC contains the user's address: the user RECEIVED this email (evaluate if action is needed)
+- Is the user the primary recipient (To) or just CC'd? CC'd recipients typically don't need to respond."""
+        else:
+            perspective_hint = """
+- Are you the primary recipient (To) or just CC'd? This affects action_required.
+- Is this a direct message or a broadcast to many recipients?"""
+
         prompt = f"""Analyze this email and provide a structured analysis.
 
 {context}
 
-Consider:
-- Are you the primary recipient (To) or just CC'd? This affects action_required.
-- Is this a direct message or a broadcast to many recipients?
+Consider:{perspective_hint}
 - Does the date suggest any urgency?
 
 Provide your analysis as JSON with these fields:
@@ -201,10 +239,10 @@ Provide your analysis as JSON with these fields:
 - priority: one of "low", "normal", "high", "urgent"
 - summary: brief 1-2 sentence summary
 - sentiment: "positive", "negative", or "neutral"
-- action_required: boolean, whether a response or action is needed from the primary recipient
+- action_required: boolean, whether the user needs to respond or take action
 - suggested_tags: list of relevant tags (max 5)
 - key_points: list of main points (max 3)
-- suggested_response: if action_required is true, brief suggestion for response
+- suggested_response: if action_required is true, brief suggestion for how the user should respond
 
 Return ONLY valid JSON, no other text."""
 

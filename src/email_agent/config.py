@@ -30,10 +30,42 @@ class SMTPConfig(BaseModel):
 
 
 class MaildirConfig(BaseModel):
-    """Local Maildir configuration."""
+    """Local Maildir configuration.
 
-    path: Path
-    account_name: str = "local"
+    The email address is the top-level key in the config. Other fields are optional:
+    - account_name: derived from email domain if not set (e.g., "protonmail" from "x@protonmail.com")
+    - path: defaults to ~/Mail/<email_address>
+    - default: marks this as the default source when --source is omitted
+    """
+
+    # email_address is set from the config key, not from YAML content
+    email_address: str = ""
+    account_name: str | None = None
+    path: Path | None = None
+    default: bool = False
+
+    def with_email(self, email: str) -> "MaildirConfig":
+        """Return a copy with email_address set."""
+        return self.model_copy(update={"email_address": email})
+
+    @property
+    def resolved_account_name(self) -> str:
+        """Get account name, defaulting to email domain."""
+        if self.account_name:
+            return self.account_name
+        # Extract domain without TLD: "foo@bar.example.com" -> "bar"
+        if "@" in self.email_address:
+            domain = self.email_address.split("@")[1]
+            # Take first part of domain (before any dots)
+            return domain.split(".")[0]
+        return "local"
+
+    @property
+    def resolved_path(self) -> Path:
+        """Get path, defaulting to ~/Mail/<email_address>."""
+        if self.path:
+            return self.path
+        return Path.home() / "Mail" / self.email_address
 
 
 class MXRouteConfig(BaseModel):
@@ -172,6 +204,64 @@ class Settings(BaseSettings):
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
+    def get_user_email_for_source(self, source_name: str) -> str | None:
+        """Get the user's email address for a given source/account name.
+
+        Args:
+            source_name: The source name (resolved_account_name, e.g., "protonmail", "gmail")
+
+        Returns:
+            The user's email address for that source, or None if not found
+        """
+        # Check maildir accounts by resolved_account_name
+        for cfg in self.maildir_accounts.values():
+            if cfg.resolved_account_name == source_name:
+                return cfg.email_address
+
+        # TODO: Add IMAP account lookup when email_address field is added
+        return None
+
+    def get_all_user_emails(self) -> list[str]:
+        """Get all configured user email addresses."""
+        emails = []
+        for cfg in self.maildir_accounts.values():
+            if cfg.email_address:
+                emails.append(cfg.email_address)
+        return emails
+
+    def get_maildir_by_account_name(self, account_name: str) -> MaildirConfig | None:
+        """Look up a maildir config by its resolved account name.
+
+        Args:
+            account_name: The account name (e.g., "protonmail", "work")
+
+        Returns:
+            The MaildirConfig, or None if not found
+        """
+        for cfg in self.maildir_accounts.values():
+            if cfg.resolved_account_name == account_name:
+                return cfg
+        return None
+
+    def get_default_maildir(self) -> tuple[str, MaildirConfig] | None:
+        """Get the default maildir config (marked with default: true).
+
+        Returns:
+            Tuple of (account_name, config) or None if no default set.
+            If no explicit default, returns the first configured account.
+        """
+        # Look for explicit default
+        for email, cfg in self.maildir_accounts.items():
+            if cfg.default:
+                return (cfg.resolved_account_name, cfg)
+
+        # Fall back to first account
+        if self.maildir_accounts:
+            email, cfg = next(iter(self.maildir_accounts.items()))
+            return (cfg.resolved_account_name, cfg)
+
+        return None
+
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Deep merge two dictionaries, with override taking precedence.
@@ -210,10 +300,23 @@ def load_settings() -> Settings:
             local_settings = yaml.safe_load(f) or {}
         file_settings = _deep_merge(file_settings, local_settings)
 
-    # Expand ~ in paths for maildir_accounts
+    # Process maildir_accounts: email address is the key, populate email_address field
     if "maildir_accounts" in file_settings:
-        for name, cfg in file_settings["maildir_accounts"].items():
+        processed_accounts = {}
+        for email_key, cfg in file_settings["maildir_accounts"].items():
+            # Handle empty config (e.g., "email@example.com: {}" or "email@example.com:")
+            if cfg is None:
+                cfg = {}
+
+            # Set email_address from the key
+            cfg["email_address"] = email_key
+
+            # Expand ~ in path if provided
             if "path" in cfg and isinstance(cfg["path"], str):
                 cfg["path"] = Path(cfg["path"]).expanduser()
+
+            processed_accounts[email_key] = cfg
+
+        file_settings["maildir_accounts"] = processed_accounts
 
     return Settings(**file_settings)
