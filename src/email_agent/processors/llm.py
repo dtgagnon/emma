@@ -9,6 +9,7 @@ import uuid
 
 from email_agent.config import LLMConfig
 from email_agent.models import DraftReply, DraftStatus, Email, EmailCategory, EmailPriority
+from email_agent.utils.text import prepare_body
 
 
 class LLMClient(ABC):
@@ -93,6 +94,60 @@ class LLMProcessor:
             temperature=temperature if temperature is not None else self.config.temperature,
         )
 
+    def _build_email_context(self, email: Email, task: str) -> str:
+        """Build task-appropriate context string for LLM processing.
+
+        Different tasks need different context:
+        - classify: From domain, subject, body preview
+        - analyze: Full headers, recipients (CC context matters), full body
+        - summarize: From, subject, full body
+        - extract_actions: Full headers with recipients, date, full body
+        - draft_reply: From, subject, full body
+        - priority: Recipients (direct vs CC), date, subject, body preview
+
+        Args:
+            email: The email to build context for
+            task: One of "classify", "analyze", "summarize",
+                  "extract_actions", "draft_reply", "priority"
+
+        Returns:
+            Formatted context string optimized for the task
+        """
+        parts = []
+
+        # From address - always include but simplify for some tasks
+        if task == "classify":
+            # Just domain is often enough for classification
+            from_addr = email.from_addr
+            if "@" in from_addr:
+                # Extract domain for simpler context
+                parts.append(f"From: {from_addr}")
+            else:
+                parts.append(f"From: {from_addr}")
+        else:
+            parts.append(f"From: {email.from_addr}")
+
+        # To/CC - important for determining if user is primary recipient or CC'd
+        if task in ("analyze", "extract_actions", "priority"):
+            if email.to_addrs:
+                parts.append(f"To: {', '.join(email.to_addrs)}")
+            if email.cc_addrs:
+                parts.append(f"CC: {', '.join(email.cc_addrs)}")
+
+        # Date - important for urgency context and action items
+        if task in ("analyze", "extract_actions", "priority"):
+            if email.date:
+                parts.append(f"Date: {email.date}")
+
+        # Subject - always include
+        parts.append(f"Subject: {email.subject}")
+
+        # Body - prepared appropriately for task
+        body = prepare_body(email.body_text, task)
+        parts.append(f"\nBody:\n{body}")
+
+        return "\n".join(parts)
+
     def _parse_json(self, text: str) -> dict[str, Any] | list[Any]:
         """Parse JSON from LLM response, handling markdown code blocks."""
         # Try direct parse first
@@ -131,22 +186,22 @@ class LLMProcessor:
         - suggested_tags: Relevant tags for organization
         - key_points: Main points from the email
         """
+        context = self._build_email_context(email, "analyze")
         prompt = f"""Analyze this email and provide a structured analysis.
 
-From: {email.from_addr}
-To: {', '.join(email.to_addrs)}
-Subject: {email.subject}
-Date: {email.date}
+{context}
 
-Body:
-{email.body_text[:4000]}
+Consider:
+- Are you the primary recipient (To) or just CC'd? This affects action_required.
+- Is this a direct message or a broadcast to many recipients?
+- Does the date suggest any urgency?
 
 Provide your analysis as JSON with these fields:
 - category: one of "personal", "work", "newsletter", "promotional", "transactional", "spam", "other"
 - priority: one of "low", "normal", "high", "urgent"
 - summary: brief 1-2 sentence summary
 - sentiment: "positive", "negative", or "neutral"
-- action_required: boolean, whether a response or action is needed
+- action_required: boolean, whether a response or action is needed from the primary recipient
 - suggested_tags: list of relevant tags (max 5)
 - key_points: list of main points (max 3)
 - suggested_response: if action_required is true, brief suggestion for response
@@ -163,11 +218,10 @@ Return ONLY valid JSON, no other text."""
 
     async def classify_email(self, email: Email) -> tuple[EmailCategory, EmailPriority]:
         """Quick classification of email category and priority."""
+        context = self._build_email_context(email, "classify")
         prompt = f"""Classify this email. Respond with JSON only.
 
-From: {email.from_addr}
-Subject: {email.subject}
-Body preview: {email.body_text[:500]}
+{context}
 
 Return JSON:
 {{"category": "<personal|work|newsletter|promotional|transactional|spam|other>", "priority": "<low|normal|high|urgent>"}}"""
@@ -187,12 +241,10 @@ Return JSON:
 
     async def summarize_email(self, email: Email) -> str:
         """Generate a brief summary of an email."""
+        context = self._build_email_context(email, "summarize")
         prompt = f"""Summarize this email in 1-2 sentences.
 
-From: {email.from_addr}
-Subject: {email.subject}
-Body:
-{email.body_text[:3000]}
+{context}
 
 Summary:"""
 
@@ -211,13 +263,11 @@ Summary:"""
         Returns:
             DraftReply object with status=PENDING_REVIEW, requiring user approval
         """
+        context = self._build_email_context(email, "draft_reply")
         prompt = f"""Draft a reply to this email.
 
 Original email:
-From: {email.from_addr}
-Subject: {email.subject}
-Body:
-{email.body_text[:3000]}
+{context}
 
 {f"Instructions: {instructions}" if instructions else "Write a professional, helpful reply."}
 
@@ -237,12 +287,15 @@ Draft reply (body only, no subject line or headers):"""
 
     async def extract_action_items(self, email: Email) -> list[str]:
         """Extract action items or tasks from an email."""
+        context = self._build_email_context(email, "extract_actions")
         prompt = f"""Extract action items from this email. List specific tasks that need to be done.
 
-From: {email.from_addr}
-Subject: {email.subject}
-Body:
-{email.body_text[:3000]}
+{context}
+
+Consider:
+- Who is being asked to do something? (Check To/CC fields)
+- Are there deadlines or time-sensitive requests?
+- What concrete actions are requested?
 
 Return JSON array of action items (strings). Return [] if none found."""
 
