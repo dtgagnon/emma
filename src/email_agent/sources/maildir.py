@@ -1,11 +1,12 @@
-"""Maildir email source connector for local email storage."""
+"""Maildir email source connector for local email storage.
+
+Note: This module is deprecated. Use NotmuchSource for notmuch-based access.
+"""
 
 import email
 import email.policy
 import hashlib
-import html
 import os
-import re
 from collections.abc import AsyncIterator
 from datetime import datetime
 from email.message import EmailMessage
@@ -13,44 +14,9 @@ from pathlib import Path
 
 from email_agent.config import MaildirConfig
 from email_agent.models import Attachment, Email
+from email_agent.utils.text import html_to_text
 
 from .base import EmailSource
-
-
-def _html_to_text(html_content: str) -> str:
-    """Convert HTML to plain text.
-
-    Simple conversion that strips tags and decodes entities.
-    Aggressively collapses whitespace to minimize token usage.
-    """
-    # Remove script and style elements
-    text = re.sub(r"<script[^>]*>[\s\S]*?</script>", "", html_content, flags=re.IGNORECASE)
-    text = re.sub(r"<style[^>]*>[\s\S]*?</style>", "", text, flags=re.IGNORECASE)
-    # Remove HTML comments
-    text = re.sub(r"<!--[\s\S]*?-->", "", text)
-
-    # Replace common block elements with newlines
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"</(p|div|tr|li|h[1-6])>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"</td>", " | ", text, flags=re.IGNORECASE)
-
-    # Remove all remaining tags
-    text = re.sub(r"<[^>]+>", "", text)
-
-    # Decode HTML entities
-    text = html.unescape(text)
-
-    # Aggressive whitespace cleanup
-    text = re.sub(r"[ \t]+", " ", text)  # Collapse horizontal whitespace to single space
-    text = "\n".join(line.strip() for line in text.splitlines())  # Strip each line
-    text = re.sub(r"\n{2,}", "\n\n", text)  # Max 1 blank line between paragraphs
-    text = re.sub(r"^\n+", "", text)  # Remove leading newlines
-    text = re.sub(r"\n+$", "", text)  # Remove trailing newlines
-
-    # Remove lines that are only whitespace or punctuation (common in HTML email cruft)
-    lines = [line for line in text.splitlines() if line.strip() and not re.match(r"^[\s|_\-=]+$", line)]
-
-    return "\n".join(lines)
 
 
 class MaildirSource(EmailSource):
@@ -208,13 +174,13 @@ class MaildirSource(EmailSource):
                     decoded = payload.decode("utf-8", errors="replace")
                     if content_type == "text/html":
                         body_html = decoded
-                        body_text = _html_to_text(decoded)
+                        body_text = html_to_text(decoded)
                     else:
                         body_text = decoded
 
             # If we only have HTML, convert it to plain text
             if not body_text and body_html:
-                body_text = _html_to_text(body_html)
+                body_text = html_to_text(body_html)
 
             # Parse date
             date_str = msg.get("Date")

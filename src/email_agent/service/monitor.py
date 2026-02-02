@@ -1,16 +1,17 @@
 """Email monitoring for the Emma service."""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from ..config import MonitorConfig, Settings
-from ..models import Email, EmailCategory, EmailPriority
+from ..models import Email
 from ..processors.llm import LLMProcessor
 from ..processors.rules import RulesEngine
 from ..sources.base import EmailSource
 from ..sources.imap import IMAPSource
 from ..sources.maildir import MaildirSource
+from ..sources.notmuch import NotmuchError, NotmuchSource
 from .state import ServiceState
 
 if TYPE_CHECKING:
@@ -48,6 +49,30 @@ class EmailMonitor:
         self.rules_engine = rules_engine
         self.action_manager = action_manager
 
+    def _get_notmuch_source(self) -> NotmuchSource | None:
+        """Get NotmuchSource if enabled and available.
+
+        Returns:
+            NotmuchSource instance or None if not available.
+        """
+        if not self.settings.notmuch.enabled:
+            return None
+
+        try:
+            source = NotmuchSource(
+                name="notmuch",
+                processed_tag=self.settings.notmuch.processed_tag,
+                database_path=(
+                    str(self.settings.notmuch.database_path)
+                    if self.settings.notmuch.database_path
+                    else None
+                ),
+            )
+            return source
+        except Exception as e:
+            logger.warning(f"Failed to create NotmuchSource: {e}")
+            return None
+
     def _get_sources(self) -> list[tuple[str, EmailSource]]:
         """Get the email sources to monitor.
 
@@ -62,9 +87,9 @@ class EmailMonitor:
         # Add IMAP sources
         for name, imap_config in self.settings.imap_accounts.items():
             if filter_sources is None or name in filter_sources:
-                sources.append((name, IMAPSource(name, imap_config)))
+                sources.append((name, IMAPSource(imap_config, name)))
 
-        # Add Maildir sources
+        # Add Maildir sources (fallback if notmuch not used)
         for name, maildir_config in self.settings.maildir_accounts.items():
             if filter_sources is None or name in filter_sources:
                 sources.append((name, MaildirSource(maildir_config)))
@@ -78,6 +103,39 @@ class EmailMonitor:
             List of new (unprocessed) emails.
         """
         new_emails: list[Email] = []
+
+        # Try NotmuchSource first (preferred)
+        notmuch_source = self._get_notmuch_source()
+        if notmuch_source:
+            try:
+                await notmuch_source.connect()
+
+                # Build exclusion query from config
+                exclude_query = ""
+                if self.settings.notmuch.exclude_tags:
+                    exclude_parts = [
+                        f"NOT tag:{tag}" for tag in self.settings.notmuch.exclude_tags
+                    ]
+                    exclude_query = " AND ".join(exclude_parts)
+
+                logger.debug("Polling notmuch for unprocessed emails")
+                async for email in notmuch_source.fetch_unprocessed(
+                    hours=24,  # Look at last 24 hours
+                    limit=self.settings.batch_size,
+                    additional_query=exclude_query if exclude_query else None,
+                ):
+                    new_emails.append(email)
+
+                await notmuch_source.disconnect()
+                logger.info(f"Found {len(new_emails)} new emails via notmuch")
+                return new_emails
+
+            except NotmuchError as e:
+                logger.warning(f"Notmuch polling failed, falling back to sources: {e}")
+            except Exception as e:
+                logger.error(f"Error polling notmuch: {e}")
+
+        # Fallback to individual sources
         sources = self._get_sources()
 
         for source_name, source in sources:
@@ -165,7 +223,7 @@ class EmailMonitor:
                 logger.error(f"Error extracting actions from {email.id}: {e}")
                 result["errors"].append(f"Action extraction error: {e}")
 
-        # Mark as processed
+        # Mark as processed in state DB
         self.state.mark_email_processed(
             email_id=email.id,
             source=email.source,
@@ -174,6 +232,17 @@ class EmailMonitor:
             classification=result["classification"],
             llm_analysis=result["llm_analysis"],
         )
+
+        # Also mark as processed in notmuch if using notmuch source
+        if self.settings.notmuch.enabled and email.message_id:
+            try:
+                notmuch = self._get_notmuch_source()
+                if notmuch:
+                    await notmuch.connect()
+                    await notmuch.mark_processed(email.message_id)
+                    await notmuch.disconnect()
+            except Exception as e:
+                logger.warning(f"Failed to mark email as processed in notmuch: {e}")
 
         return result
 

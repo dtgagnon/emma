@@ -4,7 +4,56 @@ Provides functions to clean, truncate, and prepare email body text
 for LLM processing with task-appropriate context.
 """
 
+import html
 import re
+
+
+def html_to_text(html_content: str) -> str:
+    """Convert HTML to plain text.
+
+    Strips tags, decodes entities, and aggressively collapses whitespace
+    to minimize token usage for LLM processing.
+
+    Args:
+        html_content: Raw HTML string
+
+    Returns:
+        Clean plain text extracted from HTML
+    """
+    # Remove script and style elements
+    text = re.sub(r"<script[^>]*>[\s\S]*?</script>", "", html_content, flags=re.IGNORECASE)
+    text = re.sub(r"<style[^>]*>[\s\S]*?</style>", "", text, flags=re.IGNORECASE)
+
+    # Remove HTML comments
+    text = re.sub(r"<!--[\s\S]*?-->", "", text)
+
+    # Replace common block elements with newlines
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</(p|div|tr|li|h[1-6])>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</td>", " | ", text, flags=re.IGNORECASE)
+
+    # Remove all remaining tags
+    text = re.sub(r"<[^>]+>", "", text)
+
+    # Decode HTML entities
+    text = html.unescape(text)
+
+    # Aggressive whitespace cleanup
+    text = re.sub(r"[ \t]+", " ", text)  # Collapse horizontal whitespace
+    text = "\n".join(line.strip() for line in text.splitlines())  # Strip each line
+    text = re.sub(r"\n{2,}", "\n\n", text)  # Max 1 blank line between paragraphs
+    text = re.sub(r"^\n+", "", text)  # Remove leading newlines
+    text = re.sub(r"\n+$", "", text)  # Remove trailing newlines
+
+    # Remove lines that are only whitespace or punctuation (common in HTML email cruft)
+    lines = [
+        line
+        for line in text.splitlines()
+        if line.strip() and not re.match(r"^[\s|_\-=]+$", line)
+    ]
+
+    return "\n".join(lines)
+
 
 # Mobile app footer patterns to always strip
 MOBILE_FOOTER_PATTERNS = [

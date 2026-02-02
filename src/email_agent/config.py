@@ -75,6 +75,22 @@ class MXRouteConfig(BaseModel):
     domain: str | None = None
 
 
+class NotmuchConfig(BaseModel):
+    """Notmuch integration configuration.
+
+    NotmuchSource is the preferred email source for emma, leveraging
+    notmuch's indexing and search capabilities.
+    """
+
+    enabled: bool = True  # Enabled by default if notmuch is available
+    database_path: Path | None = None  # Uses default ~/.notmuch if None
+    processed_tag: str = "emma-processed"  # Tag applied to processed emails
+    # Default query filters (applied to all fetches)
+    exclude_tags: list[str] = Field(default_factory=lambda: ["spam", "deleted"])
+    # Account tags for filtering (e.g., ["gmail", "proton"])
+    account_tags: list[str] = Field(default_factory=list)
+
+
 class LLMConfig(BaseModel):
     """LLM provider configuration."""
 
@@ -180,6 +196,7 @@ class Settings(BaseSettings):
     smtp_accounts: dict[str, SMTPConfig] = Field(default_factory=dict)
     maildir_accounts: dict[str, MaildirConfig] = Field(default_factory=dict)
     mxroute: MXRouteConfig = Field(default_factory=MXRouteConfig)
+    notmuch: NotmuchConfig = Field(default_factory=NotmuchConfig)
 
     # LLM settings
     llm: LLMConfig = Field(default_factory=LLMConfig)
