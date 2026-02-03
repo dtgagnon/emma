@@ -484,9 +484,10 @@ in
         Restart = "on-failure";
         RestartSec = "10s";
 
-        # Environment
+        # Environment - include notmuch in PATH for email tagging
         Environment = [
           "HOME=%h"
+          "PATH=${pkgs.notmuch}/bin"
         ];
 
         # Security hardening
@@ -496,6 +497,7 @@ in
         ReadWritePaths = [
           "%h/.local/share/emma"
           "%h/.config/emma"
+          "%h/Mail/.notmuch"  # notmuch database for tagging
         ];
         PrivateTmp = true;
       };
