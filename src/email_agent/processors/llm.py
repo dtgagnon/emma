@@ -52,16 +52,27 @@ class OllamaClient(LLMClient):
         self.context_length = context_length
 
     def chat(self, messages: list[dict[str, str]], max_tokens: int, temperature: float) -> str:
-        response = self.client.chat(
-            model=self.model,
-            messages=messages,  # type: ignore
-            options={
-                "num_ctx": self.context_length,
-                "num_predict": max_tokens,
-                "temperature": temperature,
-            },
-        )
-        return response["message"]["content"] or ""
+        import time
+
+        # Retry logic to handle transient empty responses (e.g., model warmup)
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            response = self.client.chat(
+                model=self.model,
+                messages=messages,  # type: ignore
+                options={
+                    "num_ctx": self.context_length,
+                    "num_predict": max_tokens,
+                    "temperature": temperature,
+                },
+            )
+            content = response["message"]["content"] or ""
+            if content.strip():
+                return content
+            elif attempt < max_retries:
+                time.sleep(0.3)  # Brief pause before retry
+
+        return content  # Return whatever we got on last attempt
 
 
 def create_llm_client(config: LLMConfig, api_key: str | None = None) -> LLMClient:
@@ -261,15 +272,40 @@ Return ONLY valid JSON, no other text."""
 
 {context}
 
-Return JSON:
-{{"category": "<personal|work|newsletter|promotional|transactional|spam|other>", "priority": "<low|normal|high|urgent>"}}"""
+Categories (choose ONE - prefer specific categories over "other"):
+- personal: Health/medical providers, therapy, personal finances (bank statements, credit cards), personal appointments, vehicle/car related, personal account security (login links, 2FA), hobbies, casual communications
+- work_clients: Direct communications from/about business clients
+- work_admin: Internal work admin, team updates, HR, IT, support tickets for work tools
+- newsletter: Subscribed newsletters, digests, regular content emails
+- promotional: Marketing, sales, deals, giveaways, sweepstakes, cashback offers, "running out" urgency tactics, job postings from Indeed/LinkedIn/job sites
+- spam: Unwanted, suspicious, phishing
+- other: ONLY if absolutely none of the above fit
 
-        response = self._chat(prompt, max_tokens=100, temperature=0)
+Classification tips:
+- "cashback", "giveaway", "running out", "limited time" → promotional
+- Doctor/medical appointments, therapy → personal (urgent if soon)
+- Car diagnostics, vehicle reports → personal
+- Login/security links for personal accounts (Claude.ai, etc.) → personal
+- Job postings from job sites → promotional (not work)
+- Invoices for coworking/office space → work_admin (unless for personal use)
+
+Return JSON:
+{{"category": "<personal|work_clients|work_admin|newsletter|promotional|spam|other>", "priority": "<low|normal|high|urgent>"}}"""
+
+        response = self._chat(prompt, max_tokens=150, temperature=0.1)
 
         try:
             result = self._parse_json(response)
             if isinstance(result, dict):
-                category = EmailCategory(result.get("category", "other"))
+                raw_category = result.get("category", "other")
+                # Map legacy/variant categories to valid enum values
+                category_map = {
+                    "work": "work_admin",
+                    "transactional": "personal",
+                    "miscellaneous": "other",
+                }
+                mapped = category_map.get(raw_category, raw_category)
+                category = EmailCategory(mapped)
                 priority = EmailPriority(result.get("priority", "normal"))
                 return category, priority
         except (ValueError, KeyError):

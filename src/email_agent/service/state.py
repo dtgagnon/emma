@@ -57,9 +57,15 @@ class ServiceState:
                     processed_at TEXT NOT NULL,
                     digest_id TEXT,
                     classification TEXT,
-                    llm_analysis TEXT
+                    llm_analysis TEXT,
+                    subject TEXT,
+                    from_addr TEXT,
+                    date TEXT
                 )
             """)
+
+            # Migrate existing tables to add new columns
+            self._migrate_processed_emails(conn)
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_processed_timestamp
                 ON processed_emails (processed_at DESC)
@@ -119,6 +125,22 @@ class ServiceState:
 
             conn.commit()
 
+    def _migrate_processed_emails(self, conn: sqlite3.Connection) -> None:
+        """Add new columns to existing processed_emails table if needed."""
+        cursor = conn.execute("PRAGMA table_info(processed_emails)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        migrations = [
+            ("subject", "TEXT"),
+            ("from_addr", "TEXT"),
+            ("date", "TEXT"),
+        ]
+
+        for col_name, col_type in migrations:
+            if col_name not in columns:
+                conn.execute(f"ALTER TABLE processed_emails ADD COLUMN {col_name} {col_type}")
+                conn.commit()
+
     # ========== Processed Emails ==========
 
     def is_email_processed(
@@ -156,6 +178,9 @@ class ServiceState:
         classification: dict | None = None,
         llm_analysis: dict | None = None,
         digest_id: str | None = None,
+        subject: str | None = None,
+        from_addr: str | None = None,
+        date: datetime | None = None,
     ) -> ProcessedEmail:
         """Mark an email as processed.
 
@@ -167,6 +192,9 @@ class ServiceState:
             classification: Classification result (category, priority).
             llm_analysis: Full LLM analysis blob.
             digest_id: ID of the digest this email was included in.
+            subject: Email subject line.
+            from_addr: Email sender address.
+            date: Email date.
 
         Returns:
             The created ProcessedEmail record.
@@ -182,6 +210,9 @@ class ServiceState:
             digest_id=digest_id,
             classification=classification,
             llm_analysis=llm_analysis,
+            subject=subject,
+            from_addr=from_addr,
+            date=date,
         )
 
         with sqlite3.connect(self.db_path) as conn:
@@ -189,8 +220,8 @@ class ServiceState:
                 """
                 INSERT OR REPLACE INTO processed_emails (
                     id, message_id, email_id, source, folder, processed_at,
-                    digest_id, classification, llm_analysis
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    digest_id, classification, llm_analysis, subject, from_addr, date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     processed.id,
@@ -202,6 +233,9 @@ class ServiceState:
                     processed.digest_id,
                     json.dumps(processed.classification) if processed.classification else None,
                     json.dumps(processed.llm_analysis) if processed.llm_analysis else None,
+                    processed.subject,
+                    processed.from_addr,
+                    processed.date.isoformat() if processed.date else None,
                 ),
             )
             conn.commit()
@@ -658,6 +692,9 @@ class ServiceState:
             digest_id=row["digest_id"],
             classification=json.loads(row["classification"]) if row["classification"] else None,
             llm_analysis=json.loads(row["llm_analysis"]) if row["llm_analysis"] else None,
+            subject=row["subject"],
+            from_addr=row["from_addr"],
+            date=datetime.fromisoformat(row["date"]) if row["date"] else None,
         )
 
     def _row_to_digest(self, row: sqlite3.Row) -> Digest:

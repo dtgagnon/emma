@@ -1429,8 +1429,9 @@ def digest_generate(
                 api_key,
                 user_email_lookup=settings.get_user_email_for_source,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not initialize LLM processor: {e}[/yellow]")
+            console.print("[dim]Summary generation will use fallback mode.[/dim]")
 
     generator = DigestGenerator(settings, state, llm_processor)
 

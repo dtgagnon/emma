@@ -54,19 +54,34 @@ class DigestGenerator:
         period_start = period_end - timedelta(hours=period)
 
         # Get undigested emails from the period
-        emails = self.state.get_undigested_emails(since=period_start)
+        all_emails = self.state.get_undigested_emails(since=period_start)
+
+        # Filter out promotional, spam, and newsletter emails
+        excluded_categories = {"promotional", "spam", "newsletter"}
+        emails = [
+            e for e in all_emails
+            if (e.classification or {}).get("category", "other") not in excluded_categories
+        ]
+        filtered_count = len(all_emails) - len(emails)
+        if filtered_count > 0:
+            logger.info(f"Filtered {filtered_count} promotional/spam/newsletter emails from digest")
 
         if not emails and not force:
-            logger.info("No undigested emails found")
+            logger.info("No relevant emails found (after filtering)")
             return None
 
         if len(emails) < self.config.min_emails and not force:
-            logger.info(f"Only {len(emails)} emails, below threshold of {self.config.min_emails}")
+            logger.info(f"Only {len(emails)} relevant emails, below threshold of {self.config.min_emails}")
             return None
 
         # Generate digest content
         summary = await self._generate_summary(emails)
         raw_content = await self._generate_markdown(emails, summary)
+
+        # Still mark filtered emails as digested so they don't reappear
+        for email in all_emails:
+            if email not in emails:
+                self.state.update_email_digest_id(email.id, "filtered")
 
         # Create digest record
         digest = self.state.create_digest(
@@ -94,9 +109,11 @@ class DigestGenerator:
             Executive summary string.
         """
         if not emails:
+            logger.debug("No emails provided to _generate_summary")
             return "No emails to summarize."
 
         if not self.llm_processor:
+            logger.info("No LLM processor available for summary generation")
             return f"Digest contains {len(emails)} emails."
 
         # Build email summaries for LLM
@@ -106,38 +123,54 @@ class DigestGenerator:
             email_summaries.append({
                 "source": email.source,
                 "folder": email.folder,
+                "subject": email.subject or "(no subject)",
+                "from": email.from_addr or "(unknown sender)",
                 "category": classification.get("category", "unknown"),
                 "priority": classification.get("priority", "normal"),
             })
 
-        prompt = f"""Generate a brief executive summary of this email digest.
+        prompt = f"""You are an email assistant. Summarize this email digest in 2-3 sentences.
 
-Emails in this digest:
 {self._format_email_list(email_summaries)}
 
-Total emails: {len(emails)}
+Total: {len(emails)} emails (promotions/spam filtered out)
 
-Write a 2-3 sentence summary highlighting:
-- Overall email volume and sources
-- Any high-priority items
-- Key categories of emails received
+Focus on: appointments, meetings, client updates, personal items (health, finances), and work updates.
+Mention specific senders, key topics, and any urgent items. Be specific and actionable.
 
 Summary:"""
 
+        logger.debug(f"Generating summary for {len(emails)} emails")
         try:
-            summary = self.llm_processor._chat(prompt, max_tokens=200, temperature=0.3)
-            return summary.strip()
+            summary = self.llm_processor._chat(prompt, max_tokens=300, temperature=0.5)
+            if summary and summary.strip():
+                logger.debug(f"Summary generated: {len(summary)} chars")
+                return summary.strip()
+            else:
+                logger.warning("LLM returned empty summary, using fallback")
+                return f"Digest contains {len(emails)} emails."
         except Exception as e:
-            logger.error(f"Error generating summary: {e}")
+            logger.error(f"Error generating summary: {e}", exc_info=True)
             return f"Digest contains {len(emails)} emails."
 
     def _format_email_list(self, emails: list[dict]) -> str:
         """Format email list for LLM prompt."""
+        # Map raw categories to display names for LLM
+        section_map = {
+            "personal": "Personal",
+            "transactional": "Personal",
+            "work_clients": "Client",
+            "work_admin": "Work",
+            "work": "Work",
+            "other": "Misc",
+            "other": "Misc",
+        }
         lines = []
         for i, email in enumerate(emails, 1):
+            priority_marker = "⚠️ " if email['priority'] in ('high', 'urgent') else ""
+            section = section_map.get(email['category'], "Misc")
             lines.append(
-                f"{i}. {email['source']}/{email['folder']} - "
-                f"{email['category']} ({email['priority']})"
+                f"{i}. {priority_marker}[{section}] From: {email['from']} - {email['subject']}"
             )
         return "\n".join(lines)
 
@@ -167,22 +200,44 @@ Summary:"""
             "",
         ]
 
-        # Group by category
-        by_category: dict[str, list[ProcessedEmail]] = {}
+        # Map raw categories to display sections
+        section_map = {
+            "personal": "Personal",
+            "transactional": "Personal",  # Statements, receipts -> Personal
+            "work_clients": "Work (Clients)",
+            "work_admin": "Work (Admin)",
+            "work": "Work (Admin)",  # Legacy category
+            "other": "Other",
+        }
+
+        # Define section order
+        section_order = ["Personal", "Work (Clients)", "Work (Admin)", "Other"]
+
+        # Group emails by display section
+        by_section: dict[str, list[ProcessedEmail]] = {s: [] for s in section_order}
         for email in emails:
-            category = (email.classification or {}).get("category", "other")
-            by_category.setdefault(category, []).append(email)
+            raw_category = (email.classification or {}).get("category", "other")
+            section = section_map.get(raw_category, "Other")
+            by_section[section].append(email)
 
-        lines.append("## Emails by Category")
-        lines.append("")
+        # Render each section (skip empty sections)
+        for section in section_order:
+            section_emails = by_section[section]
+            if not section_emails:
+                continue
 
-        for category, cat_emails in sorted(by_category.items()):
-            lines.append(f"### {category.title()} ({len(cat_emails)})")
+            lines.append(f"## {section} ({len(section_emails)})")
             lines.append("")
-            for email in cat_emails:
+            for email in section_emails:
                 priority = (email.classification or {}).get("priority", "normal")
-                priority_marker = "🔴" if priority == "urgent" else "🟡" if priority == "high" else ""
-                lines.append(f"- {priority_marker} {email.source}/{email.folder}: `{email.email_id}`")
+                priority_marker = "🔴 " if priority == "urgent" else "🟡 " if priority == "high" else ""
+                subject = email.subject or "(no subject)"
+                from_addr = email.from_addr or "(unknown)"
+                # Truncate long subjects
+                if len(subject) > 60:
+                    subject = subject[:57] + "..."
+                lines.append(f"- {priority_marker}**{subject}**")
+                lines.append(f"  From: {from_addr}")
             lines.append("")
 
         # Add action items if enabled

@@ -231,6 +231,9 @@ class EmailMonitor:
             message_id=email.message_id,
             classification=result["classification"],
             llm_analysis=result["llm_analysis"],
+            subject=email.subject,
+            from_addr=email.from_addr,
+            date=email.date,
         )
 
         # Also mark as processed in notmuch if using notmuch source

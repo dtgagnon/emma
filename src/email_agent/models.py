@@ -19,13 +19,16 @@ class EmailPriority(str, Enum):
 class EmailCategory(str, Enum):
     """Email categories for classification."""
 
-    PERSONAL = "personal"
-    WORK = "work"
+    # Core categories for digest display
+    PERSONAL = "personal"  # Health, finances, personal interests, appointments
+    WORK_CLIENTS = "work_clients"  # Client communications
+    WORK_ADMIN = "work_admin"  # Internal work, admin tasks
+    OTHER = "other"  # Catch-all for relevant but uncategorized
+
+    # Filtered categories (excluded from digest)
     NEWSLETTER = "newsletter"
     PROMOTIONAL = "promotional"
-    TRANSACTIONAL = "transactional"
     SPAM = "spam"
-    OTHER = "other"
 
 
 class Email(BaseModel):
@@ -199,6 +202,11 @@ class ProcessedEmail(BaseModel):
     digest_id: str | None = None
     classification: dict[str, Any] | None = None  # {category, priority}
     llm_analysis: dict[str, Any] | None = None  # Full analysis blob
+
+    # Email metadata for display
+    subject: str | None = None
+    from_addr: str | None = None
+    date: datetime | None = None
 
 
 class Digest(BaseModel):

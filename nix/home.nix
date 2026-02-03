@@ -92,18 +92,27 @@ let
   };
 
   # Submodule for Maildir account configuration
+  # Key is the email address, all fields are optional with sensible defaults
   maildirAccountType = types.submodule {
     options = {
-      path = mkOption {
-        type = types.str;
-        description = "Path to the Maildir directory";
-        example = "~/.thunderbird/profile/ImapMail/server";
+      accountName = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Display name for this account (defaults to email domain)";
+        example = "work";
       };
 
-      accountName = mkOption {
-        type = types.str;
-        default = "local";
-        description = "Name for this maildir account";
+      path = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Path to the Maildir directory (defaults to ~/Mail/<email>)";
+        example = "~/Mail/user@example.com";
+      };
+
+      default = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Mark this as the default/primary account";
       };
     };
   };
@@ -162,11 +171,13 @@ let
     use_tls = account.useTls;
   };
 
-  # Convert Maildir account settings
-  convertMaildirAccount = name: account: {
-    path = account.path;
-    account_name = account.accountName;
-  };
+  # Convert Maildir account settings - only include non-default values
+  convertMaildirAccount = email: account:
+    lib.filterAttrs (_: v: v != null) {
+      account_name = account.accountName;
+      path = account.path;
+      default = if account.default then true else null;
+    };
 
   # Convert digest delivery settings
   convertDigestDelivery = delivery: {
@@ -309,12 +320,16 @@ in
       maildirAccounts = mkOption {
         type = types.attrsOf maildirAccountType;
         default = { };
-        description = "Local Maildir accounts to process";
+        description = ''
+          Local Maildir accounts to process.
+          Key is the email address. All fields are optional with sensible defaults.
+        '';
         example = literalExpression ''
           {
-            thunderbird = {
-              path = "~/.thunderbird/profile/ImapMail/server";
-              accountName = "personal";
+            "user@gmail.com" = { };  # Uses defaults: ~/Mail/user@gmail.com, name="gmail"
+            "user@work.com" = {
+              accountName = "work";  # Override derived name
+              default = true;        # Mark as primary
             };
           }
         '';
