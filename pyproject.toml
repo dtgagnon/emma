@@ -1,6 +1,6 @@
 [project]
 name = "emma"
-version = "0.1.0"
+version = "0.2.0"
 description = "Email automation platform with LLM processing, rules engine, and integrations"
 requires-python = ">=3.13"
 dependencies = [
