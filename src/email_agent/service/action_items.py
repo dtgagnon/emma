@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from ..config import ActionItemConfig
 from ..models import ActionItem, ActionItemStatus, Email, EmailPriority
 from ..processors.llm import LLMProcessor
 from .state import ServiceState, _generate_email_hash
@@ -18,15 +19,18 @@ class ActionItemManager:
         self,
         state: ServiceState,
         llm_processor: LLMProcessor | None = None,
+        config: ActionItemConfig | None = None,
     ) -> None:
         """Initialize the action item manager.
 
         Args:
             state: Service state manager.
             llm_processor: Optional LLM processor for extraction.
+            config: Optional action item configuration.
         """
         self.state = state
         self.llm_processor = llm_processor
+        self.config = config or ActionItemConfig()
 
     async def extract_from_email(self, email: Email) -> list[ActionItem]:
         """Extract action items from an email using LLM.
@@ -49,6 +53,19 @@ class ActionItemManager:
         try:
             # Extract detailed action items
             extracted = await self._extract_detailed(email)
+
+            # Filter by confidence threshold
+            pre_filter_count = len(extracted)
+            extracted = [
+                i for i in extracted
+                if i.get("confidence", 1.0) >= self.config.confidence_threshold
+            ]
+            filtered_count = pre_filter_count - len(extracted)
+            if filtered_count > 0:
+                logger.debug(
+                    f"Filtered {filtered_count} action items below confidence "
+                    f"threshold {self.config.confidence_threshold}"
+                )
 
             items: list[ActionItem] = []
             for item_data in extracted:
@@ -75,6 +92,7 @@ class ActionItemManager:
                     priority=priority,
                     urgency=item_data.get("urgency", "normal"),
                     due_date=due_date,
+                    relevance=item_data.get("relevance", "direct"),
                     metadata={
                         "email_subject": email.subject,
                         "email_from": email.from_addr,
@@ -96,13 +114,23 @@ class ActionItemManager:
             email: The email to analyze.
 
         Returns:
-            List of action item dicts with title, description, priority, urgency, due_date.
+            List of action item dicts with title, description, priority, urgency, due_date, relevance.
         """
-        prompt = f"""Extract action items from this email. For each action item, provide detailed metadata.
+        # Build user identity context if available
+        user_context = ""
+        if self.llm_processor._user_email_lookup:
+            user_email = self.llm_processor._get_user_email(email)
+            if user_email:
+                user_context = f"\nYou (the recipient): {user_email}"
+
+        to_field = ", ".join(email.to_addrs) if email.to_addrs else "(unknown)"
+
+        prompt = f"""Extract action items from this email that are relevant to the recipient.
 
 From: {email.from_addr}
+To: {to_field}
 Subject: {email.subject}
-Date: {email.date}
+Date: {email.date}{user_context}
 Body:
 {email.body_text[:3000]}
 
@@ -112,12 +140,17 @@ For each action item found, return a JSON object with:
 - priority: low, normal, high, or urgent
 - urgency: low, normal, high, or urgent (how time-sensitive)
 - due_date: ISO date if mentioned/implied (YYYY-MM-DD), null if not
-- confidence: 0.0-1.0 how confident this is an action item
+- confidence: 0.0-1.0 how confident this is a real action item
+- relevance: "direct" if someone is personally asking the recipient to do something, "informational" if it is a general announcement, newsletter CTA, or FYI
+
+Guidelines for relevance:
+- "direct": the sender explicitly asks the recipient to take a specific action (reply, review, schedule, submit, etc.)
+- "informational": generic calls to action (click here, shop now, learn more), announcements that don't require the recipient to act, or actions mentioned in passing that aren't directed at the recipient
 
 Return a JSON array of action items. Return [] if no action items found.
 
 Example response:
-[{{"title": "Reply to client", "priority": "high", "urgency": "high", "due_date": null, "confidence": 0.9}}]
+[{{"title": "Reply to client", "priority": "high", "urgency": "high", "due_date": null, "confidence": 0.9, "relevance": "direct"}}]
 
 Return ONLY valid JSON, no other text."""
 
@@ -172,6 +205,7 @@ Return ONLY valid JSON, no other text."""
         *,
         status: ActionItemStatus | None = None,
         priority: EmailPriority | None = None,
+        relevance: str | None = None,
         limit: int = 50,
     ) -> list[ActionItem]:
         """List action items with optional filters.
@@ -179,6 +213,7 @@ Return ONLY valid JSON, no other text."""
         Args:
             status: Filter by status.
             priority: Filter by priority.
+            relevance: Filter by relevance ("direct" or "informational"). None for all.
             limit: Maximum items to return.
 
         Returns:
@@ -187,6 +222,7 @@ Return ONLY valid JSON, no other text."""
         return self.state.list_action_items(
             status=status,
             priority=priority,
+            relevance=relevance,
             limit=limit,
         )
 

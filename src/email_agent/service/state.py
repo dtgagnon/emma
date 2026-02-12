@@ -123,6 +123,9 @@ class ServiceState:
                 ON action_items (email_id)
             """)
 
+            # Migrate action_items table to add new columns
+            self._migrate_action_items(conn)
+
             conn.commit()
 
     def _migrate_processed_emails(self, conn: sqlite3.Connection) -> None:
@@ -140,6 +143,15 @@ class ServiceState:
             if col_name not in columns:
                 conn.execute(f"ALTER TABLE processed_emails ADD COLUMN {col_name} {col_type}")
                 conn.commit()
+
+    def _migrate_action_items(self, conn: sqlite3.Connection) -> None:
+        """Add new columns to existing action_items table if needed."""
+        cursor = conn.execute("PRAGMA table_info(action_items)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        if "relevance" not in columns:
+            conn.execute("ALTER TABLE action_items ADD COLUMN relevance TEXT DEFAULT 'direct'")
+            conn.commit()
 
     # ========== Processed Emails ==========
 
@@ -442,6 +454,7 @@ class ServiceState:
         urgency: str = "normal",
         due_date: datetime | None = None,
         digest_id: str | None = None,
+        relevance: str = "direct",
         metadata: dict | None = None,
     ) -> ActionItem:
         """Create a new action item.
@@ -454,6 +467,7 @@ class ServiceState:
             urgency: Urgency level (low/normal/high/urgent).
             due_date: Optional due date.
             digest_id: Optional digest ID if created during digest.
+            relevance: "direct" or "informational".
             metadata: Optional additional metadata.
 
         Returns:
@@ -470,6 +484,7 @@ class ServiceState:
             urgency=urgency,
             due_date=due_date,
             status=ActionItemStatus.PENDING,
+            relevance=relevance,
             metadata=metadata or {},
         )
 
@@ -478,8 +493,8 @@ class ServiceState:
                 """
                 INSERT INTO action_items (
                     id, email_id, digest_id, created_at, title, description,
-                    priority, urgency, due_date, status, completed_at, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    priority, urgency, due_date, status, completed_at, relevance, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item.id,
@@ -493,6 +508,7 @@ class ServiceState:
                     item.due_date.isoformat() if item.due_date else None,
                     item.status.value,
                     None,
+                    item.relevance,
                     json.dumps(item.metadata),
                 ),
             )
@@ -526,6 +542,7 @@ class ServiceState:
         status: ActionItemStatus | None = None,
         priority: EmailPriority | None = None,
         email_id: str | None = None,
+        relevance: str | None = None,
         limit: int = 50,
     ) -> list[ActionItem]:
         """List action items with optional filters.
@@ -534,6 +551,7 @@ class ServiceState:
             status: Filter by status.
             priority: Filter by priority.
             email_id: Filter by email.
+            relevance: Filter by relevance ("direct" or "informational"). None for all.
             limit: Maximum number of items to return.
 
         Returns:
@@ -553,6 +571,10 @@ class ServiceState:
         if email_id:
             query += " AND email_id = ?"
             params.append(email_id)
+
+        if relevance:
+            query += " AND relevance = ?"
+            params.append(relevance)
 
         query += " ORDER BY due_date ASC NULLS LAST, created_at DESC LIMIT ?"
         params.append(limit)
@@ -724,5 +746,6 @@ class ServiceState:
             due_date=datetime.fromisoformat(row["due_date"]) if row["due_date"] else None,
             status=ActionItemStatus(row["status"]),
             completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
+            relevance=row["relevance"] if row["relevance"] else "direct",
             metadata=json.loads(row["metadata"]) if row["metadata"] else {},
         )

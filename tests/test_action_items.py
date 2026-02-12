@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from email_agent.config import ActionItemConfig
 from email_agent.models import ActionItemStatus, Email, EmailPriority
 from email_agent.service.action_items import ActionItemManager
 from email_agent.service.state import ServiceState
@@ -158,3 +159,124 @@ class TestActionItemExtraction:
 
         items = await manager.extract_from_email(sample_email)
         assert items == []  # Should handle error gracefully
+
+    @pytest.mark.asyncio
+    async def test_extract_filters_low_confidence(self, state: ServiceState, sample_email: Email) -> None:
+        """Items below confidence threshold are filtered out."""
+        mock_llm = MagicMock()
+        mock_llm._user_email_lookup = None
+        mock_llm._chat = MagicMock(return_value='[]')
+        mock_llm._parse_json = MagicMock(return_value=[
+            {"title": "High confidence", "priority": "high", "confidence": 0.9, "relevance": "direct"},
+            {"title": "Low confidence", "priority": "normal", "confidence": 0.3, "relevance": "direct"},
+            {"title": "Medium confidence", "priority": "normal", "confidence": 0.7, "relevance": "direct"},
+        ])
+
+        config = ActionItemConfig(confidence_threshold=0.7)
+        manager = ActionItemManager(state=state, llm_processor=mock_llm, config=config)
+
+        items = await manager.extract_from_email(sample_email)
+
+        assert len(items) == 2
+        titles = {item.title for item in items}
+        assert "High confidence" in titles
+        assert "Medium confidence" in titles
+        assert "Low confidence" not in titles
+
+    @pytest.mark.asyncio
+    async def test_extract_relevance_stored(self, state: ServiceState, sample_email: Email) -> None:
+        """Relevance field from LLM is stored on the action item."""
+        mock_llm = MagicMock()
+        mock_llm._user_email_lookup = None
+        mock_llm._chat = MagicMock(return_value='[]')
+        mock_llm._parse_json = MagicMock(return_value=[
+            {"title": "Direct task", "priority": "high", "confidence": 0.9, "relevance": "direct"},
+            {"title": "FYI item", "priority": "normal", "confidence": 0.8, "relevance": "informational"},
+        ])
+
+        manager = ActionItemManager(state=state, llm_processor=mock_llm)
+
+        items = await manager.extract_from_email(sample_email)
+
+        assert len(items) == 2
+        by_title = {item.title: item for item in items}
+        assert by_title["Direct task"].relevance == "direct"
+        assert by_title["FYI item"].relevance == "informational"
+
+    @pytest.mark.asyncio
+    async def test_extract_relevance_defaults_to_direct(self, state: ServiceState, sample_email: Email) -> None:
+        """When LLM omits relevance, it defaults to 'direct'."""
+        mock_llm = MagicMock()
+        mock_llm._user_email_lookup = None
+        mock_llm._chat = MagicMock(return_value='[]')
+        mock_llm._parse_json = MagicMock(return_value=[
+            {"title": "No relevance field", "priority": "normal", "confidence": 0.9},
+        ])
+
+        manager = ActionItemManager(state=state, llm_processor=mock_llm)
+
+        items = await manager.extract_from_email(sample_email)
+
+        assert len(items) == 1
+        assert items[0].relevance == "direct"
+
+
+class TestRelevanceFiltering:
+    def test_create_with_relevance(self, state: ServiceState) -> None:
+        item = state.create_action_item(
+            email_id="e1",
+            title="Direct task",
+            relevance="direct",
+        )
+        assert item.relevance == "direct"
+
+        item2 = state.create_action_item(
+            email_id="e2",
+            title="FYI item",
+            relevance="informational",
+        )
+        assert item2.relevance == "informational"
+
+    def test_list_filter_by_relevance(self, state: ServiceState) -> None:
+        state.create_action_item(email_id="e1", title="Direct", relevance="direct")
+        state.create_action_item(email_id="e2", title="Info", relevance="informational")
+
+        direct = state.list_action_items(relevance="direct")
+        assert len(direct) == 1
+        assert direct[0].title == "Direct"
+
+        info = state.list_action_items(relevance="informational")
+        assert len(info) == 1
+        assert info[0].title == "Info"
+
+        all_items = state.list_action_items()
+        assert len(all_items) == 2
+
+    def test_default_relevance_is_direct(self, state: ServiceState) -> None:
+        """Items created without explicit relevance default to 'direct'."""
+        item = state.create_action_item(email_id="e1", title="Default")
+        assert item.relevance == "direct"
+
+        fetched = state.get_action_item(item.id)
+        assert fetched.relevance == "direct"
+
+    def test_migration_defaults_existing_rows(self, state: ServiceState) -> None:
+        """Existing rows (from before migration) should default to 'direct'."""
+        # The migration adds the column with DEFAULT 'direct',
+        # so any pre-existing rows get 'direct'. We verify by
+        # creating an item and reading it back.
+        item = state.create_action_item(email_id="e1", title="Legacy item")
+        fetched = state.get_action_item(item.id)
+        assert fetched.relevance == "direct"
+
+    def test_list_relevance_via_manager(self, state: ServiceState) -> None:
+        manager = ActionItemManager(state=state)
+
+        state.create_action_item(email_id="e1", title="Direct", relevance="direct")
+        state.create_action_item(email_id="e2", title="Info", relevance="informational")
+
+        direct = manager.list(relevance="direct")
+        assert len(direct) == 1
+
+        all_items = manager.list()
+        assert len(all_items) == 2

@@ -55,6 +55,7 @@ class EmmaService:
         self.action_manager = ActionItemManager(
             state=self.state,
             llm_processor=self.llm_processor,
+            config=settings.service.action_items,
         )
 
         # Initialize email monitor

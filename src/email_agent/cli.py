@@ -1555,6 +1555,7 @@ def actions_list(
     ctx: typer.Context,
     status: Annotated[str | None, typer.Option("--status", "-s", help="Filter by status (pending/in_progress/completed/dismissed)")] = None,
     priority: Annotated[str | None, typer.Option("--priority", "-p", help="Filter by priority (low/normal/high/urgent)")] = None,
+    relevance: Annotated[str, typer.Option("--relevance", "-r", help="Filter by relevance (direct/informational/all)")] = "direct",
     limit: Annotated[int, typer.Option("--limit", "-n", help="Max items to show")] = 20,
 ) -> None:
     """List action items."""
@@ -1580,9 +1581,12 @@ def actions_list(
             valid = ", ".join(p.value for p in EmailPriority)
             _error_with_help(ctx, f"Unknown priority: {priority}. Valid: {valid}")
 
+    filter_relevance = relevance if relevance != "all" else None
+
     items = state.list_action_items(
         status=filter_status,
         priority=filter_priority,
+        relevance=filter_relevance,
         limit=limit,
     )
 
@@ -1593,6 +1597,7 @@ def actions_list(
     table = Table(title="Action Items")
     table.add_column("ID", style="dim", width=8)
     table.add_column("Pri", width=4)
+    table.add_column("Rel", width=3)
     table.add_column("Status", width=12)
     table.add_column("Due", width=10)
     table.add_column("Title", width=40)
@@ -1603,6 +1608,8 @@ def actions_list(
             pri = f"[red]{pri}[/red]"
         elif item.priority == EmailPriority.HIGH:
             pri = f"[yellow]{pri}[/yellow]"
+
+        rel = "D" if item.relevance == "direct" else "I"
 
         status_str = item.status.value
         if item.status == ActionItemStatus.PENDING:
@@ -1615,7 +1622,7 @@ def actions_list(
         due = item.due_date.strftime("%Y-%m-%d") if item.due_date else "-"
         title = item.title[:38] + "..." if len(item.title) > 40 else item.title
 
-        table.add_row(item.id[:8], pri, status_str, due, title)
+        table.add_row(item.id[:8], pri, rel, status_str, due, title)
 
     console.print(table)
 
@@ -1648,6 +1655,7 @@ def actions_show(
     console.print(f"[bold]Status:[/bold] {item.status.value}")
     console.print(f"[bold]Priority:[/bold] {item.priority.value}")
     console.print(f"[bold]Urgency:[/bold] {item.urgency}")
+    console.print(f"[bold]Relevance:[/bold] {item.relevance}")
     console.print(f"[bold]Created:[/bold] {item.created_at}")
 
     if item.due_date:

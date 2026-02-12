@@ -210,6 +210,126 @@ class TestRunCycle:
         assert stats["errors"] >= 1
 
 
+class TestCategoryGate:
+    """Tests for skipping action extraction on filtered categories."""
+
+    @pytest.mark.asyncio
+    async def test_skips_extraction_for_newsletter(
+        self, settings: Settings, state: ServiceState, sample_email: Email
+    ) -> None:
+        sample_email.category = EmailCategory.NEWSLETTER
+
+        mock_action_manager = MagicMock()
+        mock_action_manager.extract_from_email = AsyncMock(return_value=[])
+
+        config = MonitorConfig(
+            auto_classify=False,
+            apply_rules=False,
+            extract_actions=True,
+        )
+        monitor = EmailMonitor(
+            settings, state, config, action_manager=mock_action_manager
+        )
+
+        result = await monitor.process_email(sample_email)
+
+        mock_action_manager.extract_from_email.assert_not_called()
+        assert result["action_items"] == []
+
+    @pytest.mark.asyncio
+    async def test_skips_extraction_for_promotional(
+        self, settings: Settings, state: ServiceState, sample_email: Email
+    ) -> None:
+        sample_email.category = EmailCategory.PROMOTIONAL
+
+        mock_action_manager = MagicMock()
+        mock_action_manager.extract_from_email = AsyncMock(return_value=[])
+
+        config = MonitorConfig(
+            auto_classify=False,
+            apply_rules=False,
+            extract_actions=True,
+        )
+        monitor = EmailMonitor(
+            settings, state, config, action_manager=mock_action_manager
+        )
+
+        await monitor.process_email(sample_email)
+        mock_action_manager.extract_from_email.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_extraction_for_spam(
+        self, settings: Settings, state: ServiceState, sample_email: Email
+    ) -> None:
+        sample_email.category = EmailCategory.SPAM
+
+        mock_action_manager = MagicMock()
+        mock_action_manager.extract_from_email = AsyncMock(return_value=[])
+
+        config = MonitorConfig(
+            auto_classify=False,
+            apply_rules=False,
+            extract_actions=True,
+        )
+        monitor = EmailMonitor(
+            settings, state, config, action_manager=mock_action_manager
+        )
+
+        await monitor.process_email(sample_email)
+        mock_action_manager.extract_from_email.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_runs_extraction_for_personal(
+        self, settings: Settings, state: ServiceState, sample_email: Email
+    ) -> None:
+        sample_email.category = EmailCategory.PERSONAL
+
+        mock_action_manager = MagicMock()
+        mock_item = MagicMock()
+        mock_item.id = "action123"
+        mock_action_manager.extract_from_email = AsyncMock(return_value=[mock_item])
+
+        config = MonitorConfig(
+            auto_classify=False,
+            apply_rules=False,
+            extract_actions=True,
+        )
+        monitor = EmailMonitor(
+            settings, state, config, action_manager=mock_action_manager
+        )
+
+        result = await monitor.process_email(sample_email)
+
+        mock_action_manager.extract_from_email.assert_called_once_with(sample_email)
+        assert result["action_items"] == ["action123"]
+
+    @pytest.mark.asyncio
+    async def test_runs_extraction_when_category_none(
+        self, settings: Settings, state: ServiceState, sample_email: Email
+    ) -> None:
+        """When classification is disabled/failed, category is None — extraction should still run."""
+        sample_email.category = None
+
+        mock_action_manager = MagicMock()
+        mock_item = MagicMock()
+        mock_item.id = "action456"
+        mock_action_manager.extract_from_email = AsyncMock(return_value=[mock_item])
+
+        config = MonitorConfig(
+            auto_classify=False,
+            apply_rules=False,
+            extract_actions=True,
+        )
+        monitor = EmailMonitor(
+            settings, state, config, action_manager=mock_action_manager
+        )
+
+        result = await monitor.process_email(sample_email)
+
+        mock_action_manager.extract_from_email.assert_called_once_with(sample_email)
+        assert result["action_items"] == ["action456"]
+
+
 class TestDeduplication:
     @pytest.mark.asyncio
     async def test_already_processed_email_skipped(

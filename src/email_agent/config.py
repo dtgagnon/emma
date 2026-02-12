@@ -162,6 +162,7 @@ class ActionItemConfig(BaseModel):
     """Configuration for action item extraction."""
 
     auto_extract: bool = True
+    confidence_threshold: float = 0.7
 
 
 class ServiceConfig(BaseModel):

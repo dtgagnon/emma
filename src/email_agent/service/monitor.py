@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from ..config import MonitorConfig, Settings
-from ..models import Email
+from ..models import Email, EmailCategory
 from ..processors.llm import LLMProcessor
 from ..processors.rules import RulesEngine
 from ..sources.base import EmailSource
@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from .action_items import ActionItemManager
 
 logger = logging.getLogger(__name__)
+
+_SKIP_ACTION_CATEGORIES = {EmailCategory.NEWSLETTER, EmailCategory.PROMOTIONAL, EmailCategory.SPAM}
 
 
 class EmailMonitor:
@@ -213,8 +215,8 @@ class EmailMonitor:
                 logger.error(f"Error applying rules to {email.id}: {e}")
                 result["errors"].append(f"Rules error: {e}")
 
-        # Extract action items if enabled
-        if self.config.extract_actions and self.action_manager:
+        # Extract action items if enabled (skip for filtered categories)
+        if self.config.extract_actions and self.action_manager and email.category not in _SKIP_ACTION_CATEGORIES:
             try:
                 items = await self.action_manager.extract_from_email(email)
                 result["action_items"] = [item.id for item in items]

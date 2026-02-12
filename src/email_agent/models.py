@@ -236,4 +236,5 @@ class ActionItem(BaseModel):
     due_date: datetime | None = None
     status: ActionItemStatus = ActionItemStatus.PENDING
     completed_at: datetime | None = None
+    relevance: str = "direct"  # "direct" or "informational"
     metadata: dict[str, Any] = Field(default_factory=dict)  # JSON for extensibility

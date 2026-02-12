@@ -240,9 +240,9 @@ Summary:"""
                 lines.append(f"  From: {from_addr}")
             lines.append("")
 
-        # Add action items if enabled
+        # Add action items if enabled (only direct relevance)
         if self.config.include_action_items:
-            action_items = self.state.list_action_items(limit=20)
+            action_items = self.state.list_action_items(relevance="direct", limit=20)
             pending_items = [
                 item for item in action_items
                 if item.status.value == "pending"
