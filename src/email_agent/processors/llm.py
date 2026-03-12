@@ -75,6 +75,28 @@ class OllamaClient(LLMClient):
         return content  # Return whatever we got on last attempt
 
 
+class OpenAICompatibleClient(LLMClient):
+    """Client for OpenAI-compatible APIs (OpenAI, vLLM, LiteLLM, etc.)."""
+
+    def __init__(self, base_url: str, model: str, api_key: str | None = None) -> None:
+        import openai
+
+        self.client = openai.OpenAI(
+            base_url=base_url,
+            api_key=api_key or "not-needed",
+        )
+        self.model = model
+
+    def chat(self, messages: list[dict[str, str]], max_tokens: int, temperature: float) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,  # type: ignore
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        return response.choices[0].message.content or ""
+
+
 def create_llm_client(config: LLMConfig, api_key: str | None = None) -> LLMClient:
     """Factory function to create the appropriate LLM client."""
     if config.provider == "anthropic":
@@ -83,9 +105,15 @@ def create_llm_client(config: LLMConfig, api_key: str | None = None) -> LLMClien
         return AnthropicClient(api_key=api_key, model=config.model)
     elif config.provider == "ollama":
         return OllamaClient(
-            base_url=config.ollama_base_url,
+            base_url=config.base_url,
             model=config.model,
-            context_length=config.ollama_context_length,
+            context_length=config.context_length,
+        )
+    elif config.provider == "openai":
+        return OpenAICompatibleClient(
+            base_url=config.base_url,
+            model=config.model,
+            api_key=api_key,
         )
     else:
         raise ValueError(f"Unknown LLM provider: {config.provider}")

@@ -652,11 +652,11 @@ def config_show() -> None:
     console.print(f"\n[bold]LLM Settings:[/bold]")
     console.print(f"  Provider: {settings.llm.provider}")
     console.print(f"  Model: {settings.llm.model}")
-    if settings.llm.provider == "ollama":
-        console.print(f"  Ollama URL: {settings.llm.ollama_base_url}")
-        console.print(f"  Context length: {settings.llm.ollama_context_length}")
-    elif settings.llm.provider == "anthropic":
-        console.print(f"  API Key: {'set' if settings.anthropic_api_key else 'not set'}")
+    if settings.llm.provider in ("ollama", "openai"):
+        console.print(f"  Base URL: {settings.llm.base_url}")
+        console.print(f"  Context length: {settings.llm.context_length}")
+    if settings.llm.provider in ("anthropic", "openai"):
+        console.print(f"  API Key: {'set' if settings.anthropic_api_key or settings.openai_api_key else 'not set'}")
 
     console.print(f"\n[bold]IMAP Accounts:[/bold] {len(settings.imap_accounts)}")
     console.print(f"[bold]Maildir Accounts:[/bold] {len(settings.maildir_accounts)}")
@@ -694,20 +694,24 @@ def config_init() -> None:
 #   enabled: true
 #   domain: example.com
 
-# LLM settings (default: local Ollama)
+# LLM settings (providers: ollama, anthropic, openai)
+# The "openai" provider works with any OpenAI-compatible API
+# (llama-cpp server, vLLM, LiteLLM, etc.)
 llm:
   provider: ollama
   model: gpt-oss:20b
   max_tokens: 1024
-  ollama_base_url: http://localhost:11434
-  ollama_context_length: 24576  # 24k context
+  base_url: http://localhost:11434
+  context_length: 24576
 
-# For Anthropic API instead:
+# Examples:
 # llm:
 #   provider: anthropic
-#   model: claude-sonnet-4-20250514
-#   max_tokens: 1024
-# Also set: ANTHROPIC_API_KEY env var
+#   model: claude-sonnet-4-20250514  # set EMMA_ANTHROPIC_API_KEY
+# llm:
+#   provider: openai
+#   base_url: http://localhost:8080/v1  # llama-cpp server, vLLM, etc.
+#   model: my-model
 """
         )
         console.print(f"[green]Created config file: {config_file}[/green]")

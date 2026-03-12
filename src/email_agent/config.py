@@ -94,13 +94,12 @@ class NotmuchConfig(BaseModel):
 class LLMConfig(BaseModel):
     """LLM provider configuration."""
 
-    provider: str = "ollama"  # "anthropic" or "ollama"
-    model: str = "gpt-oss:20b"  # Ollama model name or Anthropic model ID
+    provider: str = "ollama"  # "anthropic", "ollama", or "openai"
+    model: str = "gpt-oss:20b"
     max_tokens: int = 1024
     temperature: float = 0.3
-    # Ollama settings
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_context_length: int = 24576  # num_ctx for Ollama models (24k default)
+    base_url: str = "http://localhost:11434"  # API base URL (provider-specific)
+    context_length: int = 24576  # Context window size for the model
 
 
 class ReplySettings(BaseModel):

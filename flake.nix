@@ -31,6 +31,7 @@
                 # LLM integrations
                 anthropic        # Claude API
                 ollama           # Ollama native client
+                openai           # OpenAI-compatible APIs
 
                 # CLI and config
                 typer            # CLI framework

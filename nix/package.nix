@@ -16,6 +16,7 @@ python313.pkgs.buildPythonApplication {
     # LLM integrations
     anthropic
     ollama
+    openai
 
     # CLI and config
     typer

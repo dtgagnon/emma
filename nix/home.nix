@@ -193,8 +193,8 @@ let
       model = cfg.settings.llm.model;
       max_tokens = cfg.settings.llm.maxTokens;
       temperature = cfg.settings.llm.temperature;
-      ollama_base_url = cfg.settings.llm.ollamaBaseUrl;
-      ollama_context_length = cfg.settings.llm.ollamaContextLength;
+      base_url = cfg.settings.llm.baseUrl;
+      context_length = cfg.settings.llm.contextLength;
     };
 
     imap_accounts = mapAttrs convertImapAccount cfg.settings.imapAccounts;
@@ -249,9 +249,9 @@ in
     settings = {
       llm = {
         provider = mkOption {
-          type = types.enum [ "ollama" "anthropic" ];
+          type = types.enum [ "ollama" "anthropic" "openai" ];
           default = "ollama";
-          description = "LLM provider to use";
+          description = "LLM provider to use (openai works with any OpenAI-compatible API)";
         };
 
         model = mkOption {
@@ -273,16 +273,16 @@ in
           description = "Temperature for LLM responses (0.0-1.0)";
         };
 
-        ollamaBaseUrl = mkOption {
+        baseUrl = mkOption {
           type = types.str;
           default = "http://localhost:11434";
-          description = "Base URL for Ollama API";
+          description = "Base URL for the LLM API";
         };
 
-        ollamaContextLength = mkOption {
+        contextLength = mkOption {
           type = types.int;
           default = 24576;
-          description = "Context length (num_ctx) for Ollama models";
+          description = "Context window size for the model";
         };
       };
 
