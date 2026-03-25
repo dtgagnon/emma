@@ -229,10 +229,19 @@ class TestMarkdownGeneration:
     ) -> None:
         settings.service.digest.include_action_items = True
 
-        state.mark_email_processed("e1", "imap", "INBOX")
-        state.create_action_item(
-            email_id="e1_hash",
-            title="Important task",
+        state.mark_email_processed(
+            "e1", "imap", "INBOX",
+            llm_analysis={
+                "summary": "Test email",
+                "action_items": [
+                    {
+                        "title": "Important task",
+                        "description": "Do something important",
+                        "priority": "high",
+                        "relevance": "direct",
+                    }
+                ],
+            },
         )
 
         generator = DigestGenerator(settings, state)

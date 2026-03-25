@@ -194,6 +194,7 @@ class ActionItemConfig(BaseModel):
 
     auto_extract: bool = True
     confidence_threshold: float = 0.7
+    todo_file: Path = Field(default_factory=lambda: Path.home() / "TODO.json")
 
 
 class ServiceConfig(BaseModel):
@@ -367,5 +368,11 @@ def load_settings() -> Settings:
             processed_accounts[email_key] = cfg
 
         file_settings["maildir_accounts"] = processed_accounts
+
+    # Expand ~ in action_items.todo_file if provided
+    service = file_settings.get("service", {})
+    action_items = service.get("action_items", {})
+    if "todo_file" in action_items and isinstance(action_items["todo_file"], str):
+        action_items["todo_file"] = Path(action_items["todo_file"]).expanduser()
 
     return Settings(**file_settings)

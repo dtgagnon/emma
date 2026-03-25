@@ -229,23 +229,35 @@ Overview:"""
                     lines.append(f"  {email_summary}")
             lines.append("")
 
-        # Add action items if enabled (only direct relevance)
+        # Add action items extracted from this digest's emails only
         if self.config.include_action_items:
-            action_items = self.state.list_action_items(relevance="direct", limit=20)
-            pending_items = [
-                item for item in action_items
-                if item.status.value == "pending"
-            ]
+            digest_actions = []
+            for email in emails:
+                analysis = email.llm_analysis or {}
+                for action in analysis.get("action_items", []):
+                    if action.get("relevance", "direct") == "direct":
+                        digest_actions.append({
+                            **action,
+                            "email_from": email.from_addr or "(unknown)",
+                        })
 
-            if pending_items:
+            if digest_actions:
                 lines.append("## Action Items")
                 lines.append("")
-                for item in pending_items:
-                    priority_marker = "🔴" if item.priority.value == "urgent" else "🟡" if item.priority.value == "high" else ""
-                    due_str = f" (due: {item.due_date.strftime('%Y-%m-%d')})" if item.due_date else ""
-                    lines.append(f"- {priority_marker} **{item.title}**{due_str}")
-                    if item.description:
-                        lines.append(f"  {item.description}")
+                for action in digest_actions:
+                    priority_str = action.get("priority", "normal").lower()
+                    priority_marker = "🔴" if priority_str == "urgent" else "🟡" if priority_str == "high" else ""
+                    due_str = ""
+                    if action.get("due_date"):
+                        try:
+                            due_dt = datetime.fromisoformat(action["due_date"])
+                            due_str = f" (due: {due_dt.strftime('%Y-%m-%d')})"
+                        except (ValueError, TypeError):
+                            pass
+                    title = action.get("title", "Untitled action")
+                    lines.append(f"- {priority_marker} **{title}**{due_str}")
+                    if action.get("description"):
+                        lines.append(f"  {action['description']}")
                 lines.append("")
 
         lines.append("---")

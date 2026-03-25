@@ -8,6 +8,7 @@ from ..config import ActionItemConfig
 from ..models import ActionItem, ActionItemStatus, Email, EmailPriority
 from ..processors.llm import LLMProcessor
 from .state import ServiceState, _generate_email_hash
+from .todo import TodoFileManager
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class ActionItemManager:
         self.state = state
         self.llm_processor = llm_processor
         self.config = config or ActionItemConfig()
+        self.todo = TodoFileManager(self.config.todo_file)
 
     async def extract_from_email(
         self, email: Email, analysis: dict[str, Any] | None = None
@@ -91,7 +93,7 @@ class ActionItemManager:
                     except (ValueError, TypeError):
                         pass
 
-                # Create action item
+                # Create action item in DB
                 item = self.state.create_action_item(
                     email_id=email_hash,
                     title=item_data.get("title", "Untitled action"),
@@ -107,6 +109,31 @@ class ActionItemManager:
                     },
                 )
                 items.append(item)
+
+                # Also write to TODO.json for user task management
+                if item_data.get("relevance", "direct") == "direct":
+                    try:
+                        # Map emma priority to TODO.json priority
+                        todo_priority = {
+                            "low": "low",
+                            "normal": "medium",
+                            "high": "high",
+                            "urgent": "urgent",
+                        }.get(priority_str, "medium")
+
+                        self.todo.add_item(
+                            title=item_data.get("title", "Untitled action"),
+                            description=item_data.get("description"),
+                            priority=todo_priority,
+                            due_date=due_date,
+                            tags=["email"],
+                            metadata={
+                                "email_subject": email.subject,
+                                "email_from": email.from_addr,
+                            },
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to write action item to TODO.json: {e}")
 
             return items
 

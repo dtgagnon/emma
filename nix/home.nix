@@ -268,6 +268,7 @@ let
       };
       action_items = {
         auto_extract = cfg.service.actionItems.autoExtract;
+        todo_file = cfg.service.actionItems.todoFile;
       };
     };
   };
@@ -535,6 +536,13 @@ in
           default = true;
           description = "Automatically extract action items from processed emails";
         };
+
+        todoFile = mkOption {
+          type = types.str;
+          default = "~/TODO.json";
+          description = "Path to TODO.json file for persisting action items";
+          example = "~/Documents/TODO.json";
+        };
       };
     };
   };
@@ -572,6 +580,7 @@ in
           "%h/.local/share/emma"
           "%h/.config/emma"
           "%h/Mail/.notmuch"  # notmuch database for tagging
+          "%h/TODO.json"      # Action items persistence
         ];
         PrivateTmp = true;
       };

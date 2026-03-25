@@ -1727,6 +1727,8 @@ def actions_complete(
     success = state.update_action_status(full_id, ActionItemStatus.COMPLETED)
     if success:
         console.print(f"[green]Action item completed: {full_id[:8]}[/green]")
+        # Also update TODO.json if the item has source metadata
+        _sync_action_to_todo(settings, item, "completed")
     else:
         console.print("[red]Failed to update action item.[/red]")
 
@@ -1763,8 +1765,24 @@ def actions_dismiss(
     success = state.update_action_status(full_id, ActionItemStatus.DISMISSED)
     if success:
         console.print(f"[green]Action item dismissed: {full_id[:8]}[/green]")
+        _sync_action_to_todo(settings, item, "cancelled")
     else:
         console.print("[red]Failed to update action item.[/red]")
+
+
+def _sync_action_to_todo(settings: "Settings", item: "ActionItem", status: str) -> None:
+    """Sync an action item status change to TODO.json."""
+    from email_agent.service.todo import TodoFileManager
+
+    todo = TodoFileManager(settings.service.action_items.todo_file)
+    meta = item.metadata or {}
+    email_subject = meta.get("email_subject", "")
+    email_from = meta.get("email_from", "")
+    if email_subject and email_from:
+        task = todo.find_by_source_email(email_subject, email_from)
+        if task:
+            todo.update_status(task["id"], status)
+            console.print(f"[dim]Updated TODO.json task {task['id']}[/dim]")
 
 
 if __name__ == "__main__":
