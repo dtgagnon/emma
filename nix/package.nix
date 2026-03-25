@@ -36,6 +36,9 @@ python313.pkgs.buildPythonApplication {
     # Database
     sqlalchemy
     aiosqlite
+
+    # Messaging
+    matrix-nio
   ];
 
   # Skip tests during build (run separately)

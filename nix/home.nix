@@ -121,11 +121,12 @@ let
   digestDeliveryType = types.submodule {
     options = {
       type = mkOption {
-        type = types.enum [ "file" ];
+        type = types.enum [ "file" "matrix" ];
         default = "file";
-        description = "Delivery method type (currently only 'file' is supported)";
+        description = "Delivery method type: 'file' or 'matrix'";
       };
 
+      # File delivery options
       outputDir = mkOption {
         type = types.nullOr types.str;
         default = null;
@@ -135,7 +136,28 @@ let
       format = mkOption {
         type = types.enum [ "markdown" "html" "text" ];
         default = "markdown";
-        description = "Output format for digests";
+        description = "Output format for file delivery";
+      };
+
+      # Matrix delivery options
+      matrixEnvFile = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = ''
+          Path to an env file containing Matrix connection details.
+          The file must contain three KEY=value lines:
+            HOMESERVER=https://matrix.example.com
+            ROOM_ID=!abc123:example.com
+            ACCESS_TOKEN=syt_...
+          Compatible with sops-nix secrets.
+        '';
+        example = "/run/secrets/emma-matrix-env";
+      };
+
+      matrixFormat = mkOption {
+        type = types.enum [ "html" "markdown" ];
+        default = "html";
+        description = "Message format for Matrix delivery (html renders rich text in most clients)";
       };
     };
   };
@@ -180,11 +202,18 @@ let
     };
 
   # Convert digest delivery settings
-  convertDigestDelivery = delivery: {
-    type = delivery.type;
-    output_dir = delivery.outputDir;
-    format = delivery.format;
-  };
+  convertDigestDelivery = delivery:
+    lib.filterAttrs (_: v: v != null) ({
+      type = delivery.type;
+    } // lib.optionalAttrs (delivery.type == "file") {
+      output_dir = delivery.outputDir;
+      format = delivery.format;
+    } // lib.optionalAttrs (delivery.type == "matrix") {
+      matrix_env_file = if delivery.matrixEnvFile != null
+        then toString delivery.matrixEnvFile
+        else null;
+      matrix_format = delivery.matrixFormat;
+    });
 
   # Build the final settings structure
   finalSettings = {

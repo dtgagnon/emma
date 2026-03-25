@@ -8,6 +8,7 @@ from typing import Any
 from ..config import DigestConfig, DigestDeliveryConfig, Settings
 from ..models import ActionItem, Digest, DigestStatus, ProcessedEmail
 from ..processors.llm import LLMProcessor
+from .plugins.base import PluginRegistry
 from .state import ServiceState
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ class DigestGenerator:
         settings: Settings,
         state: ServiceState,
         llm_processor: LLMProcessor | None = None,
+        plugin_registry: PluginRegistry | None = None,
     ) -> None:
         """Initialize the digest generator.
 
@@ -28,11 +30,13 @@ class DigestGenerator:
             settings: Application settings.
             state: Service state manager.
             llm_processor: Optional LLM processor for summaries.
+            plugin_registry: Optional plugin registry for delivery plugins.
         """
         self.settings = settings
         self.state = state
         self.llm_processor = llm_processor
         self.config = settings.service.digest
+        self.plugin_registry = plugin_registry
 
     async def generate(
         self,
@@ -252,6 +256,9 @@ Overview:"""
     async def deliver(self, digest: Digest) -> bool:
         """Deliver a digest via configured delivery methods.
 
+        Uses the plugin registry to look up delivery plugins by type.
+        Falls back to built-in file delivery for backwards compatibility.
+
         Args:
             digest: The digest to deliver.
 
@@ -270,12 +277,22 @@ Overview:"""
         success = False
         for delivery_config in delivery_configs:
             try:
-                if delivery_config.type == "file":
+                config_dict = delivery_config.model_dump()
+                plugin = (
+                    self.plugin_registry.get_delivery_plugin(delivery_config.type)
+                    if self.plugin_registry
+                    else None
+                )
+                if plugin:
+                    delivered = await plugin.deliver(digest, config_dict)
+                elif delivery_config.type == "file":
+                    # Backwards compat: built-in file delivery when no registry
                     delivered = await self._deliver_file(digest, delivery_config)
-                    if delivered:
-                        success = True
                 else:
                     logger.warning(f"Unknown delivery type: {delivery_config.type}")
+                    continue
+                if delivered:
+                    success = True
             except Exception as e:
                 logger.error(f"Delivery failed ({delivery_config.type}): {e}")
 

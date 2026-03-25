@@ -1448,7 +1448,14 @@ def digest_generate(
             console.print(f"[yellow]Warning: Could not initialize LLM processor: {e}[/yellow]")
             console.print("[dim]Summary generation will use fallback mode.[/dim]")
 
-    generator = DigestGenerator(settings, state, llm_processor)
+    from email_agent.service.plugins.base import PluginRegistry
+    from email_agent.service.plugins.delivery import FileDeliveryPlugin, MatrixDeliveryPlugin
+
+    plugin_registry = PluginRegistry()
+    plugin_registry.register_delivery(FileDeliveryPlugin())
+    plugin_registry.register_delivery(MatrixDeliveryPlugin())
+
+    generator = DigestGenerator(settings, state, llm_processor, plugin_registry)
 
     async def _generate() -> None:
         console.print(f"Generating digest for last {hours} hours...")

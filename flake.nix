@@ -48,6 +48,9 @@
                 sqlalchemy       # ORM
                 aiosqlite        # Async SQLite
 
+                # Messaging
+                matrix-nio       # Matrix protocol client
+
                 # Testing
                 pytest
                 pytest-asyncio

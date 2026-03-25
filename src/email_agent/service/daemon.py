@@ -16,6 +16,8 @@ from ..processors.llm import LLMProcessor, create_llm_client
 from .action_items import ActionItemManager
 from .digest import DigestGenerator
 from .monitor import EmailMonitor
+from .plugins.base import PluginRegistry
+from .plugins.delivery import FileDeliveryPlugin, MatrixDeliveryPlugin
 from .state import ServiceState
 
 logger = logging.getLogger(__name__)
@@ -67,11 +69,17 @@ class EmmaService:
             action_manager=self.action_manager,
         )
 
+        # Initialize plugin registry
+        self.plugin_registry = PluginRegistry()
+        self.plugin_registry.register_delivery(FileDeliveryPlugin())
+        self.plugin_registry.register_delivery(MatrixDeliveryPlugin())
+
         # Initialize digest generator
         self.digest_generator = DigestGenerator(
             settings=settings,
             state=self.state,
             llm_processor=self.llm_processor,
+            plugin_registry=self.plugin_registry,
         )
 
         # Track last run times

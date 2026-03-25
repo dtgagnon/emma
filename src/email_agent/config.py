@@ -155,9 +155,16 @@ class GuardrailSettings(BaseModel):
 class DigestDeliveryConfig(BaseModel):
     """Configuration for digest delivery methods."""
 
-    type: str = "file"  # "file" only for now (email deferred)
+    type: str = "file"  # "file", "matrix"
+    # File delivery options
     output_dir: Path | None = None  # Default: ~/.local/share/emma/digests/
     format: str = "markdown"  # "markdown", "html", "text"
+    # Matrix delivery options
+    homeserver: str | None = None  # e.g., "https://matrix.org" (inline, for testing)
+    room_id: str | None = None  # e.g., "!abc123:matrix.org" (inline, for testing)
+    access_token: str | None = None  # Bot/user access token (inline, for testing)
+    matrix_env_file: str | None = None  # Path to env file with HOMESERVER/ROOM_ID/ACCESS_TOKEN
+    matrix_format: str = "html"  # "markdown" or "html" for Matrix message format
 
 
 class DigestConfig(BaseModel):
