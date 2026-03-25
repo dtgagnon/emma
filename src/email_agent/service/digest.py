@@ -100,7 +100,10 @@ class DigestGenerator:
         return digest
 
     async def _generate_summary(self, emails: list[ProcessedEmail]) -> str:
-        """Generate an executive summary of the emails.
+        """Generate an executive summary from per-email summaries stored in the DB.
+
+        Uses pre-computed summaries from llm_analysis (populated during email processing).
+        Falls back to subject lines for emails without summaries (e.g., older records).
 
         Args:
             emails: List of processed emails.
@@ -109,70 +112,48 @@ class DigestGenerator:
             Executive summary string.
         """
         if not emails:
-            logger.debug("No emails provided to _generate_summary")
             return "No emails to summarize."
 
-        if not self.llm_processor:
-            logger.info("No LLM processor available for summary generation")
-            return f"Digest contains {len(emails)} emails."
-
-        # Build email summaries for LLM
-        email_summaries = []
-        for email in emails[:20]:  # Limit to avoid token overflow
+        # Build per-email summary lines from stored analysis
+        lines = []
+        for email in emails[:50]:
+            analysis = email.llm_analysis or {}
+            summary = analysis.get("summary", "")
+            subject = email.subject or "(no subject)"
+            from_addr = email.from_addr or "(unknown)"
             classification = email.classification or {}
-            email_summaries.append({
-                "source": email.source,
-                "folder": email.folder,
-                "subject": email.subject or "(no subject)",
-                "from": email.from_addr or "(unknown sender)",
-                "category": classification.get("category", "unknown"),
-                "priority": classification.get("priority", "normal"),
-            })
+            priority = classification.get("priority", "normal")
+            priority_marker = "⚠️ " if priority in ("high", "urgent") else ""
 
-        prompt = f"""You are an email assistant. Summarize this email digest in 2-3 sentences.
+            if summary:
+                lines.append(f"- {priority_marker}From {from_addr}: {summary}")
+            else:
+                # Fallback for emails without stored summaries
+                lines.append(f"- {priority_marker}From {from_addr}: {subject}")
 
-{self._format_email_list(email_summaries)}
+        if not self.llm_processor:
+            # No LLM available — return the per-email summaries directly
+            return "\n".join(lines)
+
+        prompt = f"""You are an email assistant. Based on these individual email summaries, write a 2-4 sentence executive overview highlighting the most important items.
+
+{chr(10).join(lines)}
 
 Total: {len(emails)} emails (promotions/spam filtered out)
 
 Focus on: appointments, meetings, client updates, personal items (health, finances), and work updates.
 Mention specific senders, key topics, and any urgent items. Be specific and actionable.
 
-Summary:"""
+Overview:"""
 
-        logger.debug(f"Generating summary for {len(emails)} emails")
         try:
-            summary = self.llm_processor._chat(prompt, max_tokens=300, temperature=0.5)
-            if summary and summary.strip():
-                logger.debug(f"Summary generated: {len(summary)} chars")
-                return summary.strip()
-            else:
-                logger.warning("LLM returned empty summary, using fallback")
-                return f"Digest contains {len(emails)} emails."
+            overview = self.llm_processor._chat(prompt, task="analyze")
+            if overview and overview.strip():
+                return overview.strip()
         except Exception as e:
-            logger.error(f"Error generating summary: {e}", exc_info=True)
-            return f"Digest contains {len(emails)} emails."
+            logger.error(f"Error generating digest overview: {e}", exc_info=True)
 
-    def _format_email_list(self, emails: list[dict]) -> str:
-        """Format email list for LLM prompt."""
-        # Map raw categories to display names for LLM
-        section_map = {
-            "personal": "Personal",
-            "transactional": "Personal",
-            "work_clients": "Client",
-            "work_admin": "Work",
-            "work": "Work",
-            "other": "Misc",
-            "other": "Misc",
-        }
-        lines = []
-        for i, email in enumerate(emails, 1):
-            priority_marker = "⚠️ " if email['priority'] in ('high', 'urgent') else ""
-            section = section_map.get(email['category'], "Misc")
-            lines.append(
-                f"{i}. {priority_marker}[{section}] From: {email['from']} - {email['subject']}"
-            )
-        return "\n".join(lines)
+        return f"Digest contains {len(emails)} emails."
 
     async def _generate_markdown(
         self,
@@ -238,6 +219,10 @@ Summary:"""
                     subject = subject[:57] + "..."
                 lines.append(f"- {priority_marker}**{subject}**")
                 lines.append(f"  From: {from_addr}")
+                # Include per-email summary if available
+                email_summary = (email.llm_analysis or {}).get("summary", "")
+                if email_summary:
+                    lines.append(f"  {email_summary}")
             lines.append("")
 
         # Add action items if enabled (only direct relevance)

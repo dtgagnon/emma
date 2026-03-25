@@ -219,7 +219,7 @@ class TestMarkdownGeneration:
         # Check structure
         assert "# Email Digest" in content
         assert "## Summary" in content
-        assert "## Emails by Category" in content
+        assert "## Personal" in content or "## Work" in content
         assert "Work" in content or "work" in content.lower()
         assert "Personal" in content or "personal" in content.lower()
 

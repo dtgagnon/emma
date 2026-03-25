@@ -126,20 +126,38 @@ class TestActionItemManager:
 
 class TestActionItemExtraction:
     @pytest.mark.asyncio
-    async def test_extract_without_llm(self, state: ServiceState, sample_email: Email) -> None:
+    async def test_extract_without_llm_or_analysis(self, state: ServiceState, sample_email: Email) -> None:
         manager = ActionItemManager(state=state, llm_processor=None)
 
         items = await manager.extract_from_email(sample_email)
-        assert items == []  # No LLM means no extraction
+        assert items == []  # No LLM and no analysis means no extraction
 
     @pytest.mark.asyncio
-    async def test_extract_with_mocked_llm(self, state: ServiceState, sample_email: Email) -> None:
-        # Mock LLM processor
+    async def test_extract_from_precomputed_analysis(self, state: ServiceState, sample_email: Email) -> None:
+        analysis = {
+            "summary": "Boss wants proposal reviewed by Friday.",
+            "action_items": [
+                {"title": "Review proposal", "priority": "high", "urgency": "high", "due_date": None, "confidence": 0.9}
+            ],
+        }
+
+        manager = ActionItemManager(state=state)
+
+        items = await manager.extract_from_email(sample_email, analysis=analysis)
+
+        assert len(items) == 1
+        assert items[0].title == "Review proposal"
+        assert items[0].priority == EmailPriority.HIGH
+
+    @pytest.mark.asyncio
+    async def test_extract_falls_back_to_llm(self, state: ServiceState, sample_email: Email) -> None:
         mock_llm = MagicMock()
-        mock_llm._chat = MagicMock(return_value='[{"title": "Review proposal", "priority": "high", "urgency": "high", "due_date": null, "confidence": 0.9}]')
-        mock_llm._parse_json = MagicMock(return_value=[
-            {"title": "Review proposal", "priority": "high", "urgency": "high", "due_date": None, "confidence": 0.9}
-        ])
+        mock_llm.analyze_email = AsyncMock(return_value={
+            "summary": "Test",
+            "action_items": [
+                {"title": "Review proposal", "priority": "high", "urgency": "high", "due_date": None, "confidence": 0.9}
+            ],
+        })
 
         manager = ActionItemManager(state=state, llm_processor=mock_llm)
 
@@ -147,13 +165,12 @@ class TestActionItemExtraction:
 
         assert len(items) == 1
         assert items[0].title == "Review proposal"
-        assert items[0].priority == EmailPriority.HIGH
+        mock_llm.analyze_email.assert_called_once_with(sample_email)
 
     @pytest.mark.asyncio
     async def test_extract_handles_llm_error(self, state: ServiceState, sample_email: Email) -> None:
-        # Mock LLM that raises an error
         mock_llm = MagicMock()
-        mock_llm._chat = MagicMock(side_effect=Exception("LLM error"))
+        mock_llm.analyze_email = AsyncMock(side_effect=Exception("LLM error"))
 
         manager = ActionItemManager(state=state, llm_processor=mock_llm)
 
@@ -163,19 +180,19 @@ class TestActionItemExtraction:
     @pytest.mark.asyncio
     async def test_extract_filters_low_confidence(self, state: ServiceState, sample_email: Email) -> None:
         """Items below confidence threshold are filtered out."""
-        mock_llm = MagicMock()
-        mock_llm._user_email_lookup = None
-        mock_llm._chat = MagicMock(return_value='[]')
-        mock_llm._parse_json = MagicMock(return_value=[
-            {"title": "High confidence", "priority": "high", "confidence": 0.9, "relevance": "direct"},
-            {"title": "Low confidence", "priority": "normal", "confidence": 0.3, "relevance": "direct"},
-            {"title": "Medium confidence", "priority": "normal", "confidence": 0.7, "relevance": "direct"},
-        ])
+        analysis = {
+            "summary": "Test",
+            "action_items": [
+                {"title": "High confidence", "priority": "high", "confidence": 0.9, "relevance": "direct"},
+                {"title": "Low confidence", "priority": "normal", "confidence": 0.3, "relevance": "direct"},
+                {"title": "Medium confidence", "priority": "normal", "confidence": 0.7, "relevance": "direct"},
+            ],
+        }
 
         config = ActionItemConfig(confidence_threshold=0.7)
-        manager = ActionItemManager(state=state, llm_processor=mock_llm, config=config)
+        manager = ActionItemManager(state=state, config=config)
 
-        items = await manager.extract_from_email(sample_email)
+        items = await manager.extract_from_email(sample_email, analysis=analysis)
 
         assert len(items) == 2
         titles = {item.title for item in items}
@@ -185,18 +202,18 @@ class TestActionItemExtraction:
 
     @pytest.mark.asyncio
     async def test_extract_relevance_stored(self, state: ServiceState, sample_email: Email) -> None:
-        """Relevance field from LLM is stored on the action item."""
-        mock_llm = MagicMock()
-        mock_llm._user_email_lookup = None
-        mock_llm._chat = MagicMock(return_value='[]')
-        mock_llm._parse_json = MagicMock(return_value=[
-            {"title": "Direct task", "priority": "high", "confidence": 0.9, "relevance": "direct"},
-            {"title": "FYI item", "priority": "normal", "confidence": 0.8, "relevance": "informational"},
-        ])
+        """Relevance field from analysis is stored on the action item."""
+        analysis = {
+            "summary": "Test",
+            "action_items": [
+                {"title": "Direct task", "priority": "high", "confidence": 0.9, "relevance": "direct"},
+                {"title": "FYI item", "priority": "normal", "confidence": 0.8, "relevance": "informational"},
+            ],
+        }
 
-        manager = ActionItemManager(state=state, llm_processor=mock_llm)
+        manager = ActionItemManager(state=state)
 
-        items = await manager.extract_from_email(sample_email)
+        items = await manager.extract_from_email(sample_email, analysis=analysis)
 
         assert len(items) == 2
         by_title = {item.title: item for item in items}
@@ -205,17 +222,17 @@ class TestActionItemExtraction:
 
     @pytest.mark.asyncio
     async def test_extract_relevance_defaults_to_direct(self, state: ServiceState, sample_email: Email) -> None:
-        """When LLM omits relevance, it defaults to 'direct'."""
-        mock_llm = MagicMock()
-        mock_llm._user_email_lookup = None
-        mock_llm._chat = MagicMock(return_value='[]')
-        mock_llm._parse_json = MagicMock(return_value=[
-            {"title": "No relevance field", "priority": "normal", "confidence": 0.9},
-        ])
+        """When analysis omits relevance, it defaults to 'direct'."""
+        analysis = {
+            "summary": "Test",
+            "action_items": [
+                {"title": "No relevance field", "priority": "normal", "confidence": 0.9},
+            ],
+        }
 
-        manager = ActionItemManager(state=state, llm_processor=mock_llm)
+        manager = ActionItemManager(state=state)
 
-        items = await manager.extract_from_email(sample_email)
+        items = await manager.extract_from_email(sample_email, analysis=analysis)
 
         assert len(items) == 1
         assert items[0].relevance == "direct"

@@ -94,7 +94,7 @@ class TestProcessEmail:
         # Mock LLM processor
         mock_llm = MagicMock()
         mock_llm.classify_email = AsyncMock(
-            return_value=(EmailCategory.WORK, EmailPriority.HIGH)
+            return_value=(EmailCategory.WORK_ADMIN, EmailPriority.HIGH)
         )
 
         config = MonitorConfig(
@@ -107,10 +107,10 @@ class TestProcessEmail:
         result = await monitor.process_email(sample_email)
 
         assert result["classification"] == {
-            "category": "work",
+            "category": "work_admin",
             "priority": "high",
         }
-        assert sample_email.category == EmailCategory.WORK
+        assert sample_email.category == EmailCategory.WORK_ADMIN
         assert sample_email.priority == EmailPriority.HIGH
 
     @pytest.mark.asyncio
@@ -134,9 +134,16 @@ class TestProcessEmail:
         assert "Classification error" in result["errors"][0]
 
     @pytest.mark.asyncio
-    async def test_process_email_with_action_extraction(
+    async def test_process_email_with_analysis(
         self, settings: Settings, state: ServiceState, sample_email: Email
     ) -> None:
+        # Mock LLM processor for analyze
+        mock_llm = MagicMock()
+        mock_llm.analyze_email = AsyncMock(return_value={
+            "summary": "Test summary",
+            "action_items": [{"title": "Do thing", "confidence": 0.9, "relevance": "direct"}],
+        })
+
         # Mock action manager
         mock_action_manager = MagicMock()
         mock_item = MagicMock()
@@ -149,12 +156,16 @@ class TestProcessEmail:
             extract_actions=True,
         )
         monitor = EmailMonitor(
-            settings, state, config, action_manager=mock_action_manager
+            settings, state, config,
+            llm_processor=mock_llm,
+            action_manager=mock_action_manager,
         )
 
         result = await monitor.process_email(sample_email)
 
         assert result["action_items"] == ["action123"]
+        assert result["llm_analysis"]["summary"] == "Test summary"
+        mock_llm.analyze_email.assert_called_once_with(sample_email)
 
 
 class TestRunCycle:
@@ -214,13 +225,13 @@ class TestCategoryGate:
     """Tests for skipping action extraction on filtered categories."""
 
     @pytest.mark.asyncio
-    async def test_skips_extraction_for_newsletter(
+    async def test_skips_analysis_for_newsletter(
         self, settings: Settings, state: ServiceState, sample_email: Email
     ) -> None:
         sample_email.category = EmailCategory.NEWSLETTER
 
-        mock_action_manager = MagicMock()
-        mock_action_manager.extract_from_email = AsyncMock(return_value=[])
+        mock_llm = MagicMock()
+        mock_llm.analyze_email = AsyncMock()
 
         config = MonitorConfig(
             auto_classify=False,
@@ -228,22 +239,22 @@ class TestCategoryGate:
             extract_actions=True,
         )
         monitor = EmailMonitor(
-            settings, state, config, action_manager=mock_action_manager
+            settings, state, config, llm_processor=mock_llm
         )
 
         result = await monitor.process_email(sample_email)
 
-        mock_action_manager.extract_from_email.assert_not_called()
+        mock_llm.analyze_email.assert_not_called()
         assert result["action_items"] == []
 
     @pytest.mark.asyncio
-    async def test_skips_extraction_for_promotional(
+    async def test_skips_analysis_for_promotional(
         self, settings: Settings, state: ServiceState, sample_email: Email
     ) -> None:
         sample_email.category = EmailCategory.PROMOTIONAL
 
-        mock_action_manager = MagicMock()
-        mock_action_manager.extract_from_email = AsyncMock(return_value=[])
+        mock_llm = MagicMock()
+        mock_llm.analyze_email = AsyncMock()
 
         config = MonitorConfig(
             auto_classify=False,
@@ -251,20 +262,20 @@ class TestCategoryGate:
             extract_actions=True,
         )
         monitor = EmailMonitor(
-            settings, state, config, action_manager=mock_action_manager
+            settings, state, config, llm_processor=mock_llm
         )
 
         await monitor.process_email(sample_email)
-        mock_action_manager.extract_from_email.assert_not_called()
+        mock_llm.analyze_email.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_skips_extraction_for_spam(
+    async def test_skips_analysis_for_spam(
         self, settings: Settings, state: ServiceState, sample_email: Email
     ) -> None:
         sample_email.category = EmailCategory.SPAM
 
-        mock_action_manager = MagicMock()
-        mock_action_manager.extract_from_email = AsyncMock(return_value=[])
+        mock_llm = MagicMock()
+        mock_llm.analyze_email = AsyncMock()
 
         config = MonitorConfig(
             auto_classify=False,
@@ -272,17 +283,21 @@ class TestCategoryGate:
             extract_actions=True,
         )
         monitor = EmailMonitor(
-            settings, state, config, action_manager=mock_action_manager
+            settings, state, config, llm_processor=mock_llm
         )
 
         await monitor.process_email(sample_email)
-        mock_action_manager.extract_from_email.assert_not_called()
+        mock_llm.analyze_email.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_runs_extraction_for_personal(
+    async def test_runs_analysis_for_personal(
         self, settings: Settings, state: ServiceState, sample_email: Email
     ) -> None:
         sample_email.category = EmailCategory.PERSONAL
+
+        mock_llm = MagicMock()
+        analysis = {"summary": "Test", "action_items": []}
+        mock_llm.analyze_email = AsyncMock(return_value=analysis)
 
         mock_action_manager = MagicMock()
         mock_item = MagicMock()
@@ -295,20 +310,29 @@ class TestCategoryGate:
             extract_actions=True,
         )
         monitor = EmailMonitor(
-            settings, state, config, action_manager=mock_action_manager
+            settings, state, config,
+            llm_processor=mock_llm,
+            action_manager=mock_action_manager,
         )
 
         result = await monitor.process_email(sample_email)
 
-        mock_action_manager.extract_from_email.assert_called_once_with(sample_email)
+        mock_llm.analyze_email.assert_called_once_with(sample_email)
+        mock_action_manager.extract_from_email.assert_called_once_with(
+            sample_email, analysis=analysis
+        )
         assert result["action_items"] == ["action123"]
 
     @pytest.mark.asyncio
-    async def test_runs_extraction_when_category_none(
+    async def test_runs_analysis_when_category_none(
         self, settings: Settings, state: ServiceState, sample_email: Email
     ) -> None:
-        """When classification is disabled/failed, category is None — extraction should still run."""
+        """When classification is disabled/failed, category is None — analysis should still run."""
         sample_email.category = None
+
+        mock_llm = MagicMock()
+        analysis = {"summary": "Test", "action_items": []}
+        mock_llm.analyze_email = AsyncMock(return_value=analysis)
 
         mock_action_manager = MagicMock()
         mock_item = MagicMock()
@@ -321,12 +345,14 @@ class TestCategoryGate:
             extract_actions=True,
         )
         monitor = EmailMonitor(
-            settings, state, config, action_manager=mock_action_manager
+            settings, state, config,
+            llm_processor=mock_llm,
+            action_manager=mock_action_manager,
         )
 
         result = await monitor.process_email(sample_email)
 
-        mock_action_manager.extract_from_email.assert_called_once_with(sample_email)
+        mock_llm.analyze_email.assert_called_once_with(sample_email)
         assert result["action_items"] == ["action456"]
 
 

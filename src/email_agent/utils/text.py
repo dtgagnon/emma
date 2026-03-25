@@ -216,16 +216,13 @@ def prepare_body(text: str, task: str) -> str:
 
     Different tasks need different levels of cleaning and truncation:
     - classify: Aggressive truncation, minimal context needed
-    - analyze: Full content, keep structure
-    - summarize: Full content for accurate summary
-    - extract_actions: Full content, quoted replies stripped
+    - analyze: Full content, quoted replies stripped
     - draft_reply: Full content needed for appropriate response
     - priority: Preview only, urgency cues matter
 
     Args:
         text: Raw email body text
-        task: One of "classify", "analyze", "summarize",
-              "extract_actions", "draft_reply", "priority"
+        task: One of "classify", "analyze", "draft_reply", "priority"
 
     Returns:
         Cleaned and appropriately truncated text
@@ -252,16 +249,6 @@ def prepare_body(text: str, task: str) -> str:
         # Full analysis needs most content but can skip deep quote chains
         text = strip_quoted_replies(text)
         text = smart_truncate(text, max_chars=4000, at_sentence=True)
-
-    elif task == "summarize":
-        # Summary needs full content for accuracy
-        text = strip_quoted_replies(text)
-        text = smart_truncate(text, max_chars=4000, at_sentence=True)
-
-    elif task == "extract_actions":
-        # Action items are in the latest message, not quotes
-        text = strip_quoted_replies(text)
-        text = smart_truncate(text, max_chars=3500, at_sentence=True)
 
     elif task == "draft_reply":
         # Need full context to draft appropriate response

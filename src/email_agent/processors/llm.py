@@ -17,7 +17,7 @@ class LLMClient(ABC):
     """Abstract base class for LLM clients."""
 
     @abstractmethod
-    def chat(self, messages: list[dict[str, str]], max_tokens: int, temperature: float) -> str:
+    def chat(self, messages: list[dict[str, str]], max_tokens: int) -> str:
         """Send a chat completion request and return the response text."""
         ...
 
@@ -31,11 +31,10 @@ class AnthropicClient(LLMClient):
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
 
-    def chat(self, messages: list[dict[str, str]], max_tokens: int, temperature: float) -> str:
+    def chat(self, messages: list[dict[str, str]], max_tokens: int) -> str:
         response = self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
-            temperature=temperature,
             messages=messages,
         )
         return response.content[0].text
@@ -51,7 +50,7 @@ class OllamaClient(LLMClient):
         self.model = model
         self.context_length = context_length
 
-    def chat(self, messages: list[dict[str, str]], max_tokens: int, temperature: float) -> str:
+    def chat(self, messages: list[dict[str, str]], max_tokens: int) -> str:
         import time
 
         # Retry logic to handle transient empty responses (e.g., model warmup)
@@ -63,7 +62,6 @@ class OllamaClient(LLMClient):
                 options={
                     "num_ctx": self.context_length,
                     "num_predict": max_tokens,
-                    "temperature": temperature,
                 },
             )
             content = response["message"]["content"] or ""
@@ -87,12 +85,11 @@ class OpenAICompatibleClient(LLMClient):
         )
         self.model = model
 
-    def chat(self, messages: list[dict[str, str]], max_tokens: int, temperature: float) -> str:
+    def chat(self, messages: list[dict[str, str]], max_tokens: int) -> str:
         response = self.client.chat.completions.create(
             model=self.model,
             messages=messages,  # type: ignore
             max_tokens=max_tokens,
-            temperature=temperature,
         )
         return response.choices[0].message.content or ""
 
@@ -138,14 +135,29 @@ class LLMProcessor:
         """
         self.config = config
         self.client = create_llm_client(config, api_key)
+        self._api_key = api_key
         self._user_email_lookup = user_email_lookup
+        self._task_clients: dict[str, tuple[LLMClient, LLMConfig]] = {}
 
-    def _chat(self, prompt: str, max_tokens: int | None = None, temperature: float | None = None) -> str:
+    def _get_task_client(self, task: str) -> tuple[LLMClient, LLMConfig]:
+        """Get the LLM client and config for a specific task, using overrides if configured."""
+        if task not in self._task_clients:
+            resolved = self.config.resolve_for_task(task)
+            if resolved is self.config:
+                self._task_clients[task] = (self.client, self.config)
+            else:
+                self._task_clients[task] = (create_llm_client(resolved, self._api_key), resolved)
+        return self._task_clients[task]
+
+    def _chat(self, prompt: str, max_tokens: int | None = None, task: str | None = None) -> str:
         """Send a chat message and get the response."""
-        return self.client.chat(
+        if task:
+            client, config = self._get_task_client(task)
+        else:
+            client, config = self.client, self.config
+        return client.chat(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_tokens or self.config.max_tokens,
-            temperature=temperature if temperature is not None else self.config.temperature,
+            max_tokens=max_tokens or config.max_tokens,
         )
 
     def _get_user_email(self, email: Email) -> str | None:
@@ -240,58 +252,59 @@ class LLMProcessor:
         raise ValueError(f"Could not parse JSON from response: {text[:200]}")
 
     async def analyze_email(self, email: Email) -> dict[str, Any]:
-        """Perform comprehensive analysis of an email.
+        """Analyze an email: generate a summary and extract action items.
 
-        Returns analysis including:
-        - category: Email category classification
-        - priority: Urgency/priority level
-        - summary: Brief summary of the email
-        - sentiment: Detected sentiment (positive, negative, neutral)
-        - action_required: Whether a response/action is needed
-        - suggested_tags: Relevant tags for organization
-        - key_points: Main points from the email
+        Returns dict with:
+        - summary: 1-2 sentence plain text summary
+        - action_items: list of structured action item dicts
         """
         context = self._build_email_context(email, "analyze")
         user_email = self._get_user_email(email)
 
-        # Build perspective-aware instructions
+        user_context = ""
         if user_email:
-            perspective_hint = f"""
-The user's email address is shown in brackets above. Use it to determine:
-- If From matches the user's address: the user SENT this email (action_required=false, no suggested_response needed)
-- If To/CC contains the user's address: the user RECEIVED this email (evaluate if action is needed)
-- Is the user the primary recipient (To) or just CC'd? CC'd recipients typically don't need to respond."""
-        else:
-            perspective_hint = """
-- Are you the primary recipient (To) or just CC'd? This affects action_required.
-- Is this a direct message or a broadcast to many recipients?"""
+            user_context = f"\nYou (the recipient): {user_email}"
 
-        prompt = f"""Analyze this email and provide a structured analysis.
+        to_field = ", ".join(email.to_addrs) if email.to_addrs else "(unknown)"
 
-{context}
+        prompt = f"""Analyze this email. Provide a brief summary and extract any action items.
 
-Consider:{perspective_hint}
-- Does the date suggest any urgency?
+{context}{user_context}
 
-Provide your analysis as JSON with these fields:
-- category: one of "personal", "work", "newsletter", "promotional", "transactional", "spam", "other"
-- priority: one of "low", "normal", "high", "urgent"
-- summary: brief 1-2 sentence summary
-- sentiment: "positive", "negative", or "neutral"
-- action_required: boolean, whether the user needs to respond or take action
-- suggested_tags: list of relevant tags (max 5)
-- key_points: list of main points (max 3)
-- suggested_response: if action_required is true, brief suggestion for how the user should respond
+Return a JSON object with:
+- summary: 1-2 sentence summary of the email's content and purpose
+- action_items: array of action items (empty array if none found)
+
+For each action item, include:
+- title: concise action item title (required)
+- description: fuller description if needed
+- priority: low, normal, high, or urgent
+- urgency: low, normal, high, or urgent (how time-sensitive)
+- due_date: ISO date if mentioned/implied (YYYY-MM-DD), null if not
+- confidence: 0.0-1.0 how confident this is a real action item
+- relevance: "direct" if someone is personally asking the recipient to do something, "informational" if it is a general announcement, newsletter CTA, or FYI
+
+Guidelines for relevance:
+- "direct": the sender explicitly asks the recipient to take a specific action (reply, review, schedule, submit, etc.)
+- "informational": generic calls to action (click here, shop now, learn more), announcements, or actions mentioned in passing
+
+Example response:
+{{"summary": "Meeting reminder from Bob for Thursday at 2pm to discuss Q2 planning.", "action_items": [{{"title": "Attend Q2 planning meeting", "priority": "normal", "urgency": "high", "due_date": null, "confidence": 0.9, "relevance": "direct"}}]}}
 
 Return ONLY valid JSON, no other text."""
 
-        response = self._chat(prompt)
+        response = self._chat(prompt, task="analyze")
 
         try:
             result = self._parse_json(response)
-            return result if isinstance(result, dict) else {"error": "Expected object", "raw": response}
+            if isinstance(result, dict):
+                # Ensure expected fields exist
+                result.setdefault("summary", "")
+                result.setdefault("action_items", [])
+                return result
+            return {"summary": "", "action_items": [], "error": "Expected object"}
         except ValueError:
-            return {"error": "Failed to parse LLM response", "raw": response}
+            return {"summary": "", "action_items": [], "error": "Failed to parse LLM response"}
 
     async def classify_email(self, email: Email) -> tuple[EmailCategory, EmailPriority]:
         """Quick classification of email category and priority."""
@@ -320,7 +333,7 @@ Classification tips:
 Return JSON:
 {{"category": "<personal|work_clients|work_admin|newsletter|promotional|spam|other>", "priority": "<low|normal|high|urgent>"}}"""
 
-        response = self._chat(prompt, max_tokens=150, temperature=0.1)
+        response = self._chat(prompt, task="classify")
 
         try:
             result = self._parse_json(response)
@@ -340,17 +353,6 @@ Return JSON:
             pass
 
         return EmailCategory.OTHER, EmailPriority.NORMAL
-
-    async def summarize_email(self, email: Email) -> str:
-        """Generate a brief summary of an email."""
-        context = self._build_email_context(email, "summarize")
-        prompt = f"""Summarize this email in 1-2 sentences.
-
-{context}
-
-Summary:"""
-
-        return self._chat(prompt, max_tokens=150, temperature=0.3).strip()
 
     async def draft_reply(self, email: Email, instructions: str = "") -> DraftReply:
         """Draft a reply to an email.
@@ -375,7 +377,7 @@ Original email:
 
 Draft reply (body only, no subject line or headers):"""
 
-        draft_body = self._chat(prompt, max_tokens=500, temperature=0.7).strip()
+        draft_body = self._chat(prompt, max_tokens=500).strip()
 
         return DraftReply(
             id=str(uuid.uuid4()),
@@ -387,24 +389,3 @@ Draft reply (body only, no subject line or headers):"""
             instructions=instructions or None,
         )
 
-    async def extract_action_items(self, email: Email) -> list[str]:
-        """Extract action items or tasks from an email."""
-        context = self._build_email_context(email, "extract_actions")
-        prompt = f"""Extract action items from this email. List specific tasks that need to be done.
-
-{context}
-
-Consider:
-- Who is being asked to do something? (Check To/CC fields)
-- Are there deadlines or time-sensitive requests?
-- What concrete actions are requested?
-
-Return JSON array of action items (strings). Return [] if none found."""
-
-        response = self._chat(prompt, max_tokens=300, temperature=0)
-
-        try:
-            result = self._parse_json(response)
-            return result if isinstance(result, list) else []
-        except ValueError:
-            return []

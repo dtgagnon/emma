@@ -32,27 +32,34 @@ class ActionItemManager:
         self.llm_processor = llm_processor
         self.config = config or ActionItemConfig()
 
-    async def extract_from_email(self, email: Email) -> list[ActionItem]:
-        """Extract action items from an email using LLM.
+    async def extract_from_email(
+        self, email: Email, analysis: dict[str, Any] | None = None
+    ) -> list[ActionItem]:
+        """Extract action items from an email, using pre-computed analysis if available.
 
         Args:
             email: The email to extract action items from.
+            analysis: Pre-computed analysis dict from LLMProcessor.analyze_email().
+                      If provided, action_items are read directly without an LLM call.
 
         Returns:
             List of created ActionItem records.
         """
-        if not self.llm_processor:
-            logger.warning("No LLM processor configured, cannot extract action items")
-            return []
-
         # Generate email hash for reference
         email_hash = _generate_email_hash(
             email.id, email.source, email.folder, email.message_id
         )
 
         try:
-            # Extract detailed action items
-            extracted = await self._extract_detailed(email)
+            # Get action items from pre-computed analysis or run analysis
+            if analysis is not None:
+                extracted = analysis.get("action_items", [])
+            elif self.llm_processor:
+                result = await self.llm_processor.analyze_email(email)
+                extracted = result.get("action_items", [])
+            else:
+                logger.warning("No LLM processor configured, cannot extract action items")
+                return []
 
             # Filter by confidence threshold
             pre_filter_count = len(extracted)
@@ -106,64 +113,6 @@ class ActionItemManager:
         except Exception as e:
             logger.error(f"Error extracting action items from {email.id}: {e}")
             return []
-
-    async def _extract_detailed(self, email: Email) -> list[dict[str, Any]]:
-        """Extract detailed action items using LLM.
-
-        Args:
-            email: The email to analyze.
-
-        Returns:
-            List of action item dicts with title, description, priority, urgency, due_date, relevance.
-        """
-        # Build user identity context if available
-        user_context = ""
-        if self.llm_processor._user_email_lookup:
-            user_email = self.llm_processor._get_user_email(email)
-            if user_email:
-                user_context = f"\nYou (the recipient): {user_email}"
-
-        to_field = ", ".join(email.to_addrs) if email.to_addrs else "(unknown)"
-
-        prompt = f"""Extract action items from this email that are relevant to the recipient.
-
-From: {email.from_addr}
-To: {to_field}
-Subject: {email.subject}
-Date: {email.date}{user_context}
-Body:
-{email.body_text[:3000]}
-
-For each action item found, return a JSON object with:
-- title: concise action item title (required)
-- description: fuller description if needed
-- priority: low, normal, high, or urgent
-- urgency: low, normal, high, or urgent (how time-sensitive)
-- due_date: ISO date if mentioned/implied (YYYY-MM-DD), null if not
-- confidence: 0.0-1.0 how confident this is a real action item
-- relevance: "direct" if someone is personally asking the recipient to do something, "informational" if it is a general announcement, newsletter CTA, or FYI
-
-Guidelines for relevance:
-- "direct": the sender explicitly asks the recipient to take a specific action (reply, review, schedule, submit, etc.)
-- "informational": generic calls to action (click here, shop now, learn more), announcements that don't require the recipient to act, or actions mentioned in passing that aren't directed at the recipient
-
-Return a JSON array of action items. Return [] if no action items found.
-
-Example response:
-[{{"title": "Reply to client", "priority": "high", "urgency": "high", "due_date": null, "confidence": 0.9, "relevance": "direct"}}]
-
-Return ONLY valid JSON, no other text."""
-
-        response = self.llm_processor._chat(prompt, max_tokens=500, temperature=0.1)
-
-        try:
-            result = self.llm_processor._parse_json(response)
-            if isinstance(result, list):
-                return result
-        except (ValueError, Exception) as e:
-            logger.warning(f"Failed to parse action items: {e}")
-
-        return []
 
     async def create(
         self,

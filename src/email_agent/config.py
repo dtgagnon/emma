@@ -91,15 +91,40 @@ class NotmuchConfig(BaseModel):
     account_tags: list[str] = Field(default_factory=list)
 
 
+class LLMTaskOverride(BaseModel):
+    """Per-task LLM overrides. Any field left as None inherits from the base LLMConfig."""
+
+    provider: str | None = None
+    model: str | None = None
+    max_tokens: int | None = None
+    base_url: str | None = None
+    context_length: int | None = None
+
+
 class LLMConfig(BaseModel):
     """LLM provider configuration."""
 
     provider: str = "ollama"  # "anthropic", "ollama", or "openai"
     model: str = "gpt-oss:20b"
     max_tokens: int = 1024
-    temperature: float = 0.3
     base_url: str = "http://localhost:11434"  # API base URL (provider-specific)
     context_length: int = 24576  # Context window size for the model
+
+    # Per-task overrides (classify, analyze)
+    tasks: dict[str, LLMTaskOverride] = Field(default_factory=dict)
+
+    def resolve_for_task(self, task: str) -> "LLMConfig":
+        """Return a resolved LLMConfig for a specific task, merging overrides."""
+        override = self.tasks.get(task)
+        if not override:
+            return self
+        return LLMConfig(
+            provider=override.provider or self.provider,
+            model=override.model or self.model,
+            max_tokens=override.max_tokens if override.max_tokens is not None else self.max_tokens,
+            base_url=override.base_url or self.base_url,
+            context_length=override.context_length if override.context_length is not None else self.context_length,
+        )
 
 
 class ReplySettings(BaseModel):

@@ -128,7 +128,7 @@ class TestPrepareBody:
 
     def test_always_strips_mobile_footer(self):
         text = "Content here.\n\nSent from my iPhone"
-        for task in ["classify", "analyze", "summarize", "extract_actions", "draft_reply"]:
+        for task in ["classify", "analyze", "draft_reply"]:
             result = prepare_body(text, task)
             assert "iPhone" not in result
 
@@ -141,9 +141,9 @@ class TestPrepareBody:
         # draft_reply should not strip quoted content (needs context)
         assert ">" in result or "Previous" in result
 
-    def test_extract_actions_strips_quotes(self):
+    def test_analyze_strips_quotes(self):
         text = "Action: Review document.\n\n> Old thread content"
-        result = prepare_body(text, "extract_actions")
+        result = prepare_body(text, "analyze")
         assert "Review document" in result
         assert "> Old" not in result
 

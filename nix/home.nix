@@ -192,9 +192,17 @@ let
       provider = cfg.settings.llm.provider;
       model = cfg.settings.llm.model;
       max_tokens = cfg.settings.llm.maxTokens;
-      temperature = cfg.settings.llm.temperature;
       base_url = cfg.settings.llm.baseUrl;
       context_length = cfg.settings.llm.contextLength;
+      tasks = lib.mapAttrs (_name: task:
+        { max_tokens = task.maxTokens; }
+        // lib.filterAttrs (_: v: v != null) {
+          provider = task.provider;
+          model = task.model;
+          base_url = task.baseUrl;
+          context_length = task.contextLength;
+        }
+      ) cfg.settings.llm.tasks;
     };
 
     imap_accounts = mapAttrs convertImapAccount cfg.settings.imapAccounts;
@@ -267,12 +275,6 @@ in
           description = "Maximum tokens for LLM responses";
         };
 
-        temperature = mkOption {
-          type = types.float;
-          default = 0.3;
-          description = "Temperature for LLM responses (0.0-1.0)";
-        };
-
         baseUrl = mkOption {
           type = types.str;
           default = "http://localhost:11434";
@@ -283,6 +285,49 @@ in
           type = types.int;
           default = 24576;
           description = "Context window size for the model";
+        };
+
+        tasks = let
+          mkTaskOverrideType = { defaultMaxTokens }: types.submodule {
+            options = {
+              provider = mkOption {
+                type = types.nullOr (types.enum [ "ollama" "anthropic" "openai" ]);
+                default = null;
+                description = "Override LLM provider for this task";
+              };
+              model = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = "Override model for this task";
+              };
+              maxTokens = mkOption {
+                type = types.int;
+                default = defaultMaxTokens;
+                description = "Maximum output tokens for this task";
+              };
+              baseUrl = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = "Override base URL for this task";
+              };
+              contextLength = mkOption {
+                type = types.nullOr types.int;
+                default = null;
+                description = "Override context length for this task";
+              };
+            };
+          };
+        in {
+          classify = mkOption {
+            type = mkTaskOverrideType { defaultMaxTokens = 150; };
+            default = { };
+            description = "LLM overrides for email classification";
+          };
+          analyze = mkOption {
+            type = mkTaskOverrideType { defaultMaxTokens = 800; };
+            default = { };
+            description = "LLM overrides for email analysis (summary + action item extraction)";
+          };
         };
       };
 

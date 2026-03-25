@@ -504,8 +504,18 @@ def analyze_email(
             analysis = await processor.analyze_email(email)
 
             console.print("\n[bold cyan]Analysis Results:[/bold cyan]")
-            for key, value in analysis.items():
-                console.print(f"[bold]{key}:[/bold] {value}")
+            if analysis.get("summary"):
+                console.print(f"[bold]Summary:[/bold] {analysis['summary']}")
+            action_items = analysis.get("action_items", [])
+            if action_items:
+                console.print(f"\n[bold]Action Items ({len(action_items)}):[/bold]")
+                for item in action_items:
+                    title = item.get("title", "Untitled")
+                    priority = item.get("priority", "normal")
+                    relevance = item.get("relevance", "")
+                    console.print(f"  - [{priority}] {title} ({relevance})")
+            else:
+                console.print("\n[dim]No action items found.[/dim]")
 
     asyncio.run(_analyze())
 
@@ -548,7 +558,8 @@ def analyze_summarize(
 
             console.print(f"Summarizing: {email.subject[:50]}...")
             processor = _create_processor(settings)
-            summary = await processor.summarize_email(email)
+            analysis = await processor.analyze_email(email)
+            summary = analysis.get("summary", "No summary generated.")
 
             console.print(f"\n[bold cyan]Summary:[/bold cyan] {summary}")
 

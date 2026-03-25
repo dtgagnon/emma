@@ -215,15 +215,26 @@ class EmailMonitor:
                 logger.error(f"Error applying rules to {email.id}: {e}")
                 result["errors"].append(f"Rules error: {e}")
 
-        # Extract action items if enabled (skip for filtered categories)
-        if self.config.extract_actions and self.action_manager and email.category not in _SKIP_ACTION_CATEGORIES:
+        # Analyze email (summary + action items) if enabled, skip for filtered categories
+        if self.config.extract_actions and self.llm_processor and email.category not in _SKIP_ACTION_CATEGORIES:
             try:
-                items = await self.action_manager.extract_from_email(email)
-                result["action_items"] = [item.id for item in items]
-                logger.debug(f"Extracted {len(items)} action items from {email.id}")
+                analysis = await self.llm_processor.analyze_email(email)
+                result["llm_analysis"] = analysis
+                logger.debug(f"Analyzed {email.id}: summary={bool(analysis.get('summary'))}, actions={len(analysis.get('action_items', []))}")
             except Exception as e:
-                logger.error(f"Error extracting actions from {email.id}: {e}")
-                result["errors"].append(f"Action extraction error: {e}")
+                logger.error(f"Error analyzing {email.id}: {e}")
+                result["errors"].append(f"Analysis error: {e}")
+                analysis = None
+
+            # Create action item records from analysis
+            if self.action_manager and result["llm_analysis"]:
+                try:
+                    items = await self.action_manager.extract_from_email(email, analysis=result["llm_analysis"])
+                    result["action_items"] = [item.id for item in items]
+                    logger.debug(f"Created {len(items)} action items from {email.id}")
+                except Exception as e:
+                    logger.error(f"Error creating action items for {email.id}: {e}")
+                    result["errors"].append(f"Action item creation error: {e}")
 
         # Mark as processed in state DB
         self.state.mark_email_processed(
