@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -1299,6 +1300,7 @@ app.add_typer(service_app, name="service")
 @service_app.command("start")
 def service_start(
     foreground: Annotated[bool, typer.Option("--foreground", "-f", help="Run in foreground")] = False,
+    log_level: Annotated[str, typer.Option("--log-level", "-l", help="Log level (DEBUG, INFO, WARNING, ERROR)")] = "",
 ) -> None:
     """Start the Emma background service.
 
@@ -1316,7 +1318,15 @@ def service_start(
     service = EmmaService(settings)
 
     if foreground:
-        console.print("[cyan]Starting Emma service in foreground...[/cyan]")
+        # CLI flag overrides config; config defaults to INFO
+        level_name = (log_level or settings.service.log_level).upper()
+        level = getattr(logging, level_name, logging.INFO)
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        console.print(f"[cyan]Starting Emma service in foreground (log_level={level_name})...[/cyan]")
         console.print("Press Ctrl+C to stop.\n")
         asyncio.run(service.start())
     else:

@@ -2,6 +2,7 @@
 
 import email
 import email.policy
+import logging
 from collections.abc import AsyncIterator
 from datetime import datetime
 from email.message import EmailMessage
@@ -13,6 +14,8 @@ from email_agent.config import IMAPConfig
 from email_agent.models import Attachment, Email
 
 from .base import EmailSource
+
+logger = logging.getLogger(__name__)
 
 
 class IMAPSource(EmailSource):
@@ -28,12 +31,14 @@ class IMAPSource(EmailSource):
 
     async def connect(self) -> None:
         """Connect to IMAP server."""
+        logger.info(f"Connecting to IMAP server: {self.config.host}:{self.config.port} (ssl={self.config.use_ssl})")
         self._client = IMAPClient(
             self.config.host,
             port=self.config.port,
             ssl=self.config.use_ssl,
         )
         self._client.login(self.config.username, self.config.password)
+        logger.info(f"Connected to IMAP server: {self.config.host}")
 
     async def disconnect(self) -> None:
         """Disconnect from IMAP server."""
@@ -70,6 +75,7 @@ class IMAPSource(EmailSource):
             criteria = ["SINCE", since]
 
         message_ids = self.client.search(criteria)
+        logger.debug(f"IMAP search {self.name}/{folder}: {len(message_ids)} messages found")
 
         if limit:
             message_ids = message_ids[-limit:]

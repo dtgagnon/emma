@@ -202,6 +202,7 @@ class ServiceConfig(BaseModel):
 
     enabled: bool = False
     polling_interval: int = 300  # seconds (5 minutes)
+    log_level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR
     monitor: MonitorConfig = Field(default_factory=MonitorConfig)
     digest: DigestConfig = Field(default_factory=DigestConfig)
     action_items: ActionItemConfig = Field(default_factory=ActionItemConfig)

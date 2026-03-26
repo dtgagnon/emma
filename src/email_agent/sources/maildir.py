@@ -6,6 +6,7 @@ Note: This module is deprecated. Use NotmuchSource for notmuch-based access.
 import email
 import email.policy
 import hashlib
+import logging
 import os
 from collections.abc import AsyncIterator
 from datetime import datetime
@@ -17,6 +18,8 @@ from email_agent.models import Attachment, Email
 from email_agent.utils.text import html_to_text
 
 from .base import EmailSource
+
+logger = logging.getLogger(__name__)
 
 
 class MaildirSource(EmailSource):
@@ -35,6 +38,7 @@ class MaildirSource(EmailSource):
         path = self.config.resolved_path
         if not path.exists():
             raise FileNotFoundError(f"Maildir path does not exist: {path}")
+        logger.debug(f"Connected to maildir: {path}")
         self._connected = True
 
     async def disconnect(self) -> None:
@@ -134,6 +138,7 @@ class MaildirSource(EmailSource):
         try:
             with open(path, "rb") as f:
                 raw_message = f.read()
+            logger.debug(f"Parsing maildir file: {path.name}")
 
             msg: EmailMessage = email.message_from_bytes(
                 raw_message, policy=email.policy.default
@@ -230,7 +235,8 @@ class MaildirSource(EmailSource):
                 flags=flags,
                 attachments=attachments,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to parse maildir file {path.name}: {e}")
             return None
 
     async def get_email(self, email_id: str, folder: str = "INBOX") -> Email | None:

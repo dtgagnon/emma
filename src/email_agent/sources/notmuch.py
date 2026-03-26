@@ -6,6 +6,7 @@ and search capabilities.
 """
 
 import json
+import logging
 import subprocess
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
@@ -16,6 +17,8 @@ from email_agent.models import Attachment, Email
 from email_agent.utils.text import html_to_text
 
 from .base import EmailSource
+
+logger = logging.getLogger(__name__)
 
 
 def _date_query(days: int | None = None, hours: int | None = None) -> str:
@@ -110,6 +113,8 @@ class NotmuchSource(EmailSource):
         """Verify notmuch is available and database exists."""
         try:
             result = self._run_notmuch(["count", "*"])
+            count = result.stdout.strip()
+            logger.debug(f"Connected to notmuch database ({count} total messages)")
             self._connected = True
         except FileNotFoundError:
             raise NotmuchError("notmuch not found in PATH")
@@ -247,6 +252,8 @@ class NotmuchSource(EmailSource):
         Yields:
             Email objects
         """
+        logger.debug(f"Fetching emails: query={query!r}, limit={limit}")
+
         # Get full message data with JSON output
         args = [
             "show",
@@ -265,10 +272,12 @@ class NotmuchSource(EmailSource):
 
         if result.returncode != 0:
             if "No messages" in result.stderr or not result.stdout.strip():
+                logger.debug("No messages matched query")
                 return
             raise NotmuchError(f"notmuch show failed: {result.stderr}")
 
         if not result.stdout.strip():
+            logger.debug("No messages matched query")
             return
 
         try:
@@ -277,13 +286,20 @@ class NotmuchSource(EmailSource):
             raise NotmuchError(f"Failed to parse notmuch output: {e}")
 
         # notmuch show returns nested structure: [[[[message]]]]
+        yielded = 0
+        parse_errors = 0
         for thread in data:
             for message_group in thread:
                 for message_data in message_group:
                     if isinstance(message_data, dict):
                         email = self._parse_message(message_data)
                         if email:
+                            yielded += 1
                             yield email
+                        else:
+                            parse_errors += 1
+        if parse_errors:
+            logger.warning(f"Failed to parse {parse_errors} messages from notmuch results")
 
     async def fetch_unprocessed(
         self,
@@ -413,7 +429,8 @@ class NotmuchSource(EmailSource):
                 attachments=attachments,
                 tags=tags,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to parse message: {e}")
             return None
 
     def _extract_body_parts(

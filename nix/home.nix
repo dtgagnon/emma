@@ -250,6 +250,7 @@ let
     service = {
       enabled = cfg.service.enable;
       polling_interval = cfg.service.pollingInterval;
+      log_level = cfg.service.logLevel;
       monitor = {
         enabled = cfg.service.monitor.enable;
         sources = cfg.service.monitor.sources;
@@ -438,6 +439,12 @@ in
     service = {
       enable = mkEnableOption "Emma background service for email monitoring and automation";
 
+      logLevel = mkOption {
+        type = types.enum [ "DEBUG" "INFO" "WARNING" "ERROR" ];
+        default = "INFO";
+        description = "Log level for the Emma service (DEBUG, INFO, WARNING, ERROR)";
+      };
+
       pollingInterval = mkOption {
         type = types.int;
         default = 300;
@@ -562,7 +569,7 @@ in
 
       Service = {
         Type = "simple";
-        ExecStart = "${cfg.package}/bin/emma service start --foreground";
+        ExecStart = "${cfg.package}/bin/emma service start --foreground --log-level ${cfg.service.logLevel}";
         Restart = "on-failure";
         RestartSec = "10s";
 

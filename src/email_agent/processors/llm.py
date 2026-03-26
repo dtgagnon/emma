@@ -1,7 +1,9 @@
 """LLM-based email processing."""
 
 import json
+import logging
 import re
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
@@ -11,6 +13,8 @@ import uuid
 from email_agent.config import LLMConfig
 from email_agent.models import DraftReply, DraftStatus, Email, EmailCategory, EmailPriority
 from email_agent.utils.text import prepare_body
+
+logger = logging.getLogger(__name__)
 
 
 class LLMClient(ABC):
@@ -30,13 +34,17 @@ class AnthropicClient(LLMClient):
 
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
+        logger.info(f"Initialized Anthropic client: model={model}")
 
     def chat(self, messages: list[dict[str, str]], max_tokens: int) -> str:
+        start = time.monotonic()
         response = self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
             messages=messages,
         )
+        elapsed = time.monotonic() - start
+        logger.debug(f"Anthropic chat completed in {elapsed:.1f}s (model={self.model})")
         return response.content[0].text
 
 
@@ -49,13 +57,13 @@ class OllamaClient(LLMClient):
         self.client = ollama.Client(host=base_url)
         self.model = model
         self.context_length = context_length
+        logger.info(f"Initialized Ollama client: model={model}, base_url={base_url}, ctx={context_length}")
 
     def chat(self, messages: list[dict[str, str]], max_tokens: int) -> str:
-        import time
-
         # Retry logic to handle transient empty responses (e.g., model warmup)
         max_retries = 2
         for attempt in range(max_retries + 1):
+            start = time.monotonic()
             response = self.client.chat(
                 model=self.model,
                 messages=messages,  # type: ignore
@@ -64,12 +72,16 @@ class OllamaClient(LLMClient):
                     "num_predict": max_tokens,
                 },
             )
+            elapsed = time.monotonic() - start
             content = response["message"]["content"] or ""
             if content.strip():
+                logger.debug(f"Ollama chat completed in {elapsed:.1f}s (model={self.model})")
                 return content
             elif attempt < max_retries:
+                logger.warning(f"Ollama returned empty response (attempt {attempt + 1}/{max_retries + 1}), retrying...")
                 time.sleep(0.3)  # Brief pause before retry
 
+        logger.warning(f"Ollama returned empty response after {max_retries + 1} attempts (model={self.model})")
         return content  # Return whatever we got on last attempt
 
 
@@ -84,18 +96,23 @@ class OpenAICompatibleClient(LLMClient):
             api_key=api_key or "not-needed",
         )
         self.model = model
+        logger.info(f"Initialized OpenAI-compatible client: model={model}, base_url={base_url}")
 
     def chat(self, messages: list[dict[str, str]], max_tokens: int) -> str:
+        start = time.monotonic()
         response = self.client.chat.completions.create(
             model=self.model,
             messages=messages,  # type: ignore
             max_tokens=max_tokens,
         )
+        elapsed = time.monotonic() - start
+        logger.debug(f"OpenAI-compatible chat completed in {elapsed:.1f}s (model={self.model})")
         return response.choices[0].message.content or ""
 
 
 def create_llm_client(config: LLMConfig, api_key: str | None = None) -> LLMClient:
     """Factory function to create the appropriate LLM client."""
+    logger.debug(f"Creating LLM client: provider={config.provider}, model={config.model}")
     if config.provider == "anthropic":
         if not api_key:
             raise ValueError("Anthropic API key required")
@@ -155,10 +172,16 @@ class LLMProcessor:
             client, config = self._get_task_client(task)
         else:
             client, config = self.client, self.config
-        return client.chat(
+        tokens = max_tokens or config.max_tokens
+        logger.debug(f"LLM request: task={task}, model={config.model}, max_tokens={tokens}, prompt_len={len(prompt)}")
+        start = time.monotonic()
+        result = client.chat(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_tokens or config.max_tokens,
+            max_tokens=tokens,
         )
+        elapsed = time.monotonic() - start
+        logger.info(f"LLM response: task={task}, model={config.model}, {elapsed:.1f}s, response_len={len(result)}")
+        return result
 
     def _get_user_email(self, email: Email) -> str | None:
         """Get the user's email address for the account that received this email."""
@@ -249,6 +272,7 @@ class LLMProcessor:
             except json.JSONDecodeError:
                 pass
 
+        logger.warning(f"Failed to parse JSON from LLM response: {text[:200]}")
         raise ValueError(f"Could not parse JSON from response: {text[:200]}")
 
     async def analyze_email(self, email: Email) -> dict[str, Any]:
@@ -303,7 +327,8 @@ Return ONLY valid JSON, no other text."""
                 result.setdefault("action_items", [])
                 return result
             return {"summary": "", "action_items": [], "error": "Expected object"}
-        except ValueError:
+        except ValueError as e:
+            logger.warning(f"Analysis parse failed for {email.id}: {e}")
             return {"summary": "", "action_items": [], "error": "Failed to parse LLM response"}
 
     async def classify_email(self, email: Email) -> tuple[EmailCategory, EmailPriority]:
@@ -349,8 +374,8 @@ Return JSON:
                 category = EmailCategory(mapped)
                 priority = EmailPriority(result.get("priority", "normal"))
                 return category, priority
-        except (ValueError, KeyError):
-            pass
+        except (ValueError, KeyError) as e:
+            logger.warning(f"Classification parse failed for {email.id}, defaulting to OTHER/NORMAL: {e}")
 
         return EmailCategory.OTHER, EmailPriority.NORMAL
 
