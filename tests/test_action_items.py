@@ -14,11 +14,16 @@ from email_agent.service.state import ServiceState
 
 
 @pytest.fixture
-def state() -> ServiceState:
+def state(tmp_path: Path) -> ServiceState:
     """Create a temporary ServiceState for testing."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "test.db"
-        yield ServiceState(db_path)
+    db_path = tmp_path / "test.db"
+    return ServiceState(db_path)
+
+
+@pytest.fixture
+def action_config(tmp_path: Path) -> ActionItemConfig:
+    """Create ActionItemConfig with a temp TODO.json to avoid polluting ~/TODO.json."""
+    return ActionItemConfig(todo_file=tmp_path / "TODO.json")
 
 
 @pytest.fixture
@@ -43,8 +48,8 @@ Boss""",
 
 
 class TestActionItemManager:
-    def test_create_action_item(self, state: ServiceState) -> None:
-        manager = ActionItemManager(state=state)
+    def test_create_action_item(self, state: ServiceState, action_config: ActionItemConfig) -> None:
+        manager = ActionItemManager(state=state, config=action_config)
 
         item = manager.state.create_action_item(
             email_id="email_hash",
@@ -55,8 +60,8 @@ class TestActionItemManager:
         assert item.title == "Review proposal"
         assert item.priority == EmailPriority.HIGH
 
-    def test_list_action_items(self, state: ServiceState) -> None:
-        manager = ActionItemManager(state=state)
+    def test_list_action_items(self, state: ServiceState, action_config: ActionItemConfig) -> None:
+        manager = ActionItemManager(state=state, config=action_config)
 
         state.create_action_item(email_id="e1", title="Task 1")
         state.create_action_item(email_id="e2", title="Task 2")
@@ -64,8 +69,8 @@ class TestActionItemManager:
         items = manager.list()
         assert len(items) == 2
 
-    def test_list_with_status_filter(self, state: ServiceState) -> None:
-        manager = ActionItemManager(state=state)
+    def test_list_with_status_filter(self, state: ServiceState, action_config: ActionItemConfig) -> None:
+        manager = ActionItemManager(state=state, config=action_config)
 
         state.create_action_item(email_id="e1", title="Pending")
         item = state.create_action_item(email_id="e2", title="Completed")
@@ -75,8 +80,8 @@ class TestActionItemManager:
         assert len(pending) == 1
         assert pending[0].title == "Pending"
 
-    def test_list_with_priority_filter(self, state: ServiceState) -> None:
-        manager = ActionItemManager(state=state)
+    def test_list_with_priority_filter(self, state: ServiceState, action_config: ActionItemConfig) -> None:
+        manager = ActionItemManager(state=state, config=action_config)
 
         state.create_action_item(email_id="e1", title="Normal", priority=EmailPriority.NORMAL)
         state.create_action_item(email_id="e2", title="Urgent", priority=EmailPriority.URGENT)
@@ -85,8 +90,8 @@ class TestActionItemManager:
         assert len(urgent) == 1
         assert urgent[0].title == "Urgent"
 
-    def test_get_action_item(self, state: ServiceState) -> None:
-        manager = ActionItemManager(state=state)
+    def test_get_action_item(self, state: ServiceState, action_config: ActionItemConfig) -> None:
+        manager = ActionItemManager(state=state, config=action_config)
 
         created = state.create_action_item(email_id="e1", title="Test task")
         fetched = manager.get(created.id)
@@ -95,8 +100,8 @@ class TestActionItemManager:
         assert fetched.id == created.id
         assert fetched.title == "Test task"
 
-    def test_complete_action_item(self, state: ServiceState) -> None:
-        manager = ActionItemManager(state=state)
+    def test_complete_action_item(self, state: ServiceState, action_config: ActionItemConfig) -> None:
+        manager = ActionItemManager(state=state, config=action_config)
 
         item = state.create_action_item(email_id="e1", title="Task")
         assert manager.complete(item.id)
@@ -105,8 +110,8 @@ class TestActionItemManager:
         assert updated.status == ActionItemStatus.COMPLETED
         assert updated.completed_at is not None
 
-    def test_dismiss_action_item(self, state: ServiceState) -> None:
-        manager = ActionItemManager(state=state)
+    def test_dismiss_action_item(self, state: ServiceState, action_config: ActionItemConfig) -> None:
+        manager = ActionItemManager(state=state, config=action_config)
 
         item = state.create_action_item(email_id="e1", title="Task")
         assert manager.dismiss(item.id)
@@ -114,8 +119,8 @@ class TestActionItemManager:
         updated = manager.get(item.id)
         assert updated.status == ActionItemStatus.DISMISSED
 
-    def test_start_action_item(self, state: ServiceState) -> None:
-        manager = ActionItemManager(state=state)
+    def test_start_action_item(self, state: ServiceState, action_config: ActionItemConfig) -> None:
+        manager = ActionItemManager(state=state, config=action_config)
 
         item = state.create_action_item(email_id="e1", title="Task")
         assert manager.start(item.id)
@@ -126,14 +131,14 @@ class TestActionItemManager:
 
 class TestActionItemExtraction:
     @pytest.mark.asyncio
-    async def test_extract_without_llm_or_analysis(self, state: ServiceState, sample_email: Email) -> None:
-        manager = ActionItemManager(state=state, llm_processor=None)
+    async def test_extract_without_llm_or_analysis(self, state: ServiceState, sample_email: Email, action_config: ActionItemConfig) -> None:
+        manager = ActionItemManager(state=state, llm_processor=None, config=action_config)
 
         items = await manager.extract_from_email(sample_email)
         assert items == []  # No LLM and no analysis means no extraction
 
     @pytest.mark.asyncio
-    async def test_extract_from_precomputed_analysis(self, state: ServiceState, sample_email: Email) -> None:
+    async def test_extract_from_precomputed_analysis(self, state: ServiceState, sample_email: Email, action_config: ActionItemConfig) -> None:
         analysis = {
             "summary": "Boss wants proposal reviewed by Friday.",
             "action_items": [
@@ -141,7 +146,7 @@ class TestActionItemExtraction:
             ],
         }
 
-        manager = ActionItemManager(state=state)
+        manager = ActionItemManager(state=state, config=action_config)
 
         items = await manager.extract_from_email(sample_email, analysis=analysis)
 
@@ -150,7 +155,7 @@ class TestActionItemExtraction:
         assert items[0].priority == EmailPriority.HIGH
 
     @pytest.mark.asyncio
-    async def test_extract_falls_back_to_llm(self, state: ServiceState, sample_email: Email) -> None:
+    async def test_extract_falls_back_to_llm(self, state: ServiceState, sample_email: Email, action_config: ActionItemConfig) -> None:
         mock_llm = MagicMock()
         mock_llm.analyze_email = AsyncMock(return_value={
             "summary": "Test",
@@ -159,7 +164,7 @@ class TestActionItemExtraction:
             ],
         })
 
-        manager = ActionItemManager(state=state, llm_processor=mock_llm)
+        manager = ActionItemManager(state=state, llm_processor=mock_llm, config=action_config)
 
         items = await manager.extract_from_email(sample_email)
 
@@ -168,17 +173,17 @@ class TestActionItemExtraction:
         mock_llm.analyze_email.assert_called_once_with(sample_email)
 
     @pytest.mark.asyncio
-    async def test_extract_handles_llm_error(self, state: ServiceState, sample_email: Email) -> None:
+    async def test_extract_handles_llm_error(self, state: ServiceState, sample_email: Email, action_config: ActionItemConfig) -> None:
         mock_llm = MagicMock()
         mock_llm.analyze_email = AsyncMock(side_effect=Exception("LLM error"))
 
-        manager = ActionItemManager(state=state, llm_processor=mock_llm)
+        manager = ActionItemManager(state=state, llm_processor=mock_llm, config=action_config)
 
         items = await manager.extract_from_email(sample_email)
         assert items == []  # Should handle error gracefully
 
     @pytest.mark.asyncio
-    async def test_extract_filters_low_confidence(self, state: ServiceState, sample_email: Email) -> None:
+    async def test_extract_filters_low_confidence(self, state: ServiceState, sample_email: Email, action_config: ActionItemConfig) -> None:
         """Items below confidence threshold are filtered out."""
         analysis = {
             "summary": "Test",
@@ -189,8 +194,8 @@ class TestActionItemExtraction:
             ],
         }
 
-        config = ActionItemConfig(confidence_threshold=0.7)
-        manager = ActionItemManager(state=state, config=config)
+        action_config.confidence_threshold = 0.7
+        manager = ActionItemManager(state=state, config=action_config)
 
         items = await manager.extract_from_email(sample_email, analysis=analysis)
 
@@ -201,7 +206,7 @@ class TestActionItemExtraction:
         assert "Low confidence" not in titles
 
     @pytest.mark.asyncio
-    async def test_extract_relevance_stored(self, state: ServiceState, sample_email: Email) -> None:
+    async def test_extract_relevance_stored(self, state: ServiceState, sample_email: Email, action_config: ActionItemConfig) -> None:
         """Relevance field from analysis is stored on the action item."""
         analysis = {
             "summary": "Test",
@@ -211,7 +216,7 @@ class TestActionItemExtraction:
             ],
         }
 
-        manager = ActionItemManager(state=state)
+        manager = ActionItemManager(state=state, config=action_config)
 
         items = await manager.extract_from_email(sample_email, analysis=analysis)
 
@@ -221,7 +226,7 @@ class TestActionItemExtraction:
         assert by_title["FYI item"].relevance == "informational"
 
     @pytest.mark.asyncio
-    async def test_extract_relevance_defaults_to_direct(self, state: ServiceState, sample_email: Email) -> None:
+    async def test_extract_relevance_defaults_to_direct(self, state: ServiceState, sample_email: Email, action_config: ActionItemConfig) -> None:
         """When analysis omits relevance, it defaults to 'direct'."""
         analysis = {
             "summary": "Test",
@@ -230,7 +235,7 @@ class TestActionItemExtraction:
             ],
         }
 
-        manager = ActionItemManager(state=state)
+        manager = ActionItemManager(state=state, config=action_config)
 
         items = await manager.extract_from_email(sample_email, analysis=analysis)
 
@@ -286,8 +291,8 @@ class TestRelevanceFiltering:
         fetched = state.get_action_item(item.id)
         assert fetched.relevance == "direct"
 
-    def test_list_relevance_via_manager(self, state: ServiceState) -> None:
-        manager = ActionItemManager(state=state)
+    def test_list_relevance_via_manager(self, state: ServiceState, action_config: ActionItemConfig) -> None:
+        manager = ActionItemManager(state=state, config=action_config)
 
         state.create_action_item(email_id="e1", title="Direct", relevance="direct")
         state.create_action_item(email_id="e2", title="Info", relevance="informational")
