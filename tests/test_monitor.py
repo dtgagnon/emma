@@ -213,7 +213,7 @@ class TestRunCycle:
         monitor = EmailMonitor(settings, state, config)
 
         monitor.poll_sources = AsyncMock(return_value=[sample_email])
-        monitor.process_email = AsyncMock(side_effect=Exception("Processing failed"))
+        monitor.process_batch = AsyncMock(side_effect=Exception("Processing failed"))
 
         stats = await monitor.run_cycle()
 

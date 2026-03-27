@@ -262,6 +262,131 @@ class EmailMonitor:
 
         return result
 
+    async def process_batch(self, emails: list[Email]) -> list[dict]:
+        """Process a batch of emails through staged pipeline.
+
+        All emails go through each stage together before moving to the next,
+        so only one LLM model is active at a time. This avoids model thrashing
+        on the inference server.
+
+        Stages: classify all → rules all → analyze eligible + extract actions → mark processed
+
+        Args:
+            emails: List of emails to process.
+
+        Returns:
+            List of result dicts, one per email, in input order.
+        """
+        if not emails:
+            return []
+
+        # Initialize per-email result dicts
+        results: list[dict] = []
+        for email in emails:
+            results.append({
+                "email_id": email.id,
+                "source": email.source,
+                "folder": email.folder,
+                "classification": None,
+                "llm_analysis": None,
+                "rules_applied": [],
+                "action_items": [],
+                "errors": [],
+            })
+
+        # Stage 1: Classify all emails (single model loaded)
+        if self.config.auto_classify and self.llm_processor:
+            logger.info(f"Batch classify: {len(emails)} emails")
+            for email, result in zip(emails, results):
+                try:
+                    category, priority = await self.llm_processor.classify_email(email)
+                    email.category = category
+                    email.priority = priority
+                    result["classification"] = {
+                        "category": category.value,
+                        "priority": priority.value,
+                    }
+                    logger.debug(f"Classified {email.id}: {category.value}/{priority.value}")
+                except Exception as e:
+                    logger.error(f"Error classifying {email.id}: {e}")
+                    result["errors"].append(f"Classification error: {e}")
+
+        # Stage 2: Apply rules to all emails (no LLM)
+        if self.config.apply_rules and self.rules_engine:
+            for email, result in zip(emails, results):
+                try:
+                    rule_result = await self.rules_engine.process_email(email)
+                    result["rules_applied"] = rule_result.rules_matched
+                    if rule_result.errors:
+                        result["errors"].extend(rule_result.errors)
+                except Exception as e:
+                    logger.error(f"Error applying rules to {email.id}: {e}")
+                    result["errors"].append(f"Rules error: {e}")
+
+        # Stage 3: Analyze eligible emails + extract action items (single model loaded)
+        if self.config.extract_actions and self.llm_processor:
+            eligible = [
+                (email, result) for email, result in zip(emails, results)
+                if email.category not in _SKIP_ACTION_CATEGORIES
+            ]
+            logger.info(f"Batch analyze: {len(eligible)}/{len(emails)} emails (skipping filtered categories)")
+            for email, result in eligible:
+                try:
+                    analysis = await self.llm_processor.analyze_email(email)
+                    result["llm_analysis"] = analysis
+                    logger.debug(f"Analyzed {email.id}: summary={bool(analysis.get('summary'))}, actions={len(analysis.get('action_items', []))}")
+                except Exception as e:
+                    logger.error(f"Error analyzing {email.id}: {e}")
+                    result["errors"].append(f"Analysis error: {e}")
+
+                # Extract action items from analysis (no LLM)
+                if self.action_manager and result["llm_analysis"]:
+                    try:
+                        items = await self.action_manager.extract_from_email(email, analysis=result["llm_analysis"])
+                        result["action_items"] = [item.id for item in items]
+                        logger.debug(f"Created {len(items)} action items from {email.id}")
+                    except Exception as e:
+                        logger.error(f"Error creating action items for {email.id}: {e}")
+                        result["errors"].append(f"Action item creation error: {e}")
+
+        # Stage 4: Mark all emails as processed
+        notmuch = None
+        if self.settings.notmuch.enabled:
+            notmuch = self._get_notmuch_source()
+            if notmuch:
+                try:
+                    await notmuch.connect()
+                except Exception as e:
+                    logger.warning(f"Failed to connect notmuch for batch marking: {e}")
+                    notmuch = None
+
+        for email, result in zip(emails, results):
+            self.state.mark_email_processed(
+                email_id=email.id,
+                source=email.source,
+                folder=email.folder,
+                message_id=email.message_id,
+                classification=result["classification"],
+                llm_analysis=result["llm_analysis"],
+                subject=email.subject,
+                from_addr=email.from_addr,
+                date=email.date,
+            )
+
+            if notmuch and email.message_id:
+                try:
+                    await notmuch.mark_processed(email.message_id)
+                except Exception as e:
+                    logger.warning(f"Failed to mark {email.id} as processed in notmuch: {e}")
+
+        if notmuch:
+            try:
+                await notmuch.disconnect()
+            except Exception as e:
+                logger.warning(f"Failed to disconnect notmuch after batch: {e}")
+
+        return results
+
     async def run_cycle(self) -> dict:
         """Run a complete monitoring cycle.
 
@@ -284,17 +409,14 @@ class EmailMonitor:
             new_emails = await self.poll_sources()
             stats["emails_found"] = len(new_emails)
 
-            # Process each email
-            for email in new_emails:
-                try:
-                    result = await self.process_email(email)
+            # Process emails in bulk stages (classify all → rules all → analyze all)
+            if new_emails:
+                batch_results = await self.process_batch(new_emails)
+                for result in batch_results:
                     stats["emails_processed"] += 1
                     stats["action_items_created"] += len(result.get("action_items", []))
                     if result.get("errors"):
                         stats["errors"] += len(result["errors"])
-                except Exception as e:
-                    logger.error(f"Error processing email {email.id}: {e}")
-                    stats["errors"] += 1
 
         except Exception as e:
             logger.error(f"Error in monitoring cycle: {e}")
