@@ -172,7 +172,6 @@ class DigestConfig(BaseModel):
 
     enabled: bool = True
     schedule: list[str] = Field(default_factory=lambda: ["08:00", "20:00"])  # 24h times
-    period_hours: int = 12
     min_emails: int = 1
     include_action_items: bool = True
     delivery: list[DigestDeliveryConfig] = Field(default_factory=list)

@@ -40,22 +40,21 @@ class DigestGenerator:
 
     async def generate(
         self,
-        period_hours: int | None = None,
         *,
+        since: datetime | None = None,
         force: bool = False,
     ) -> Digest | None:
         """Generate a digest for the specified period.
 
         Args:
-            period_hours: Hours to include in digest. Defaults to config value.
+            since: Start of the digest window. Defaults to 24h ago.
             force: Generate even if under minimum email threshold.
 
         Returns:
             The created Digest, or None if no emails to include.
         """
-        period = period_hours or self.config.period_hours
         period_end = datetime.now()
-        period_start = period_end - timedelta(hours=period)
+        period_start = since or (period_end - timedelta(hours=24))
 
         # Get undigested emails from the period
         all_emails = self.state.get_undigested_emails(since=period_start)

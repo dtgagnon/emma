@@ -285,7 +285,7 @@ class TestPluginRegistryIntegration:
 
         state.mark_email_processed("e1", "imap", "INBOX")
         generator = DigestGenerator(settings, state, plugin_registry=registry)
-        digest = await generator.generate(period_hours=12, force=True)
+        digest = await generator.generate(since=datetime.now() - timedelta(hours=12), force=True)
         assert digest is not None
 
         mock_response = RoomSendResponse.from_dict(

@@ -6,7 +6,7 @@ import logging
 import os
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
@@ -1470,7 +1470,8 @@ def digest_generate(
     async def _generate() -> None:
         console.print(f"Generating digest for last {hours} hours...")
 
-        digest = await generator.generate(period_hours=hours, force=force)
+        since = datetime.now() - timedelta(hours=hours)
+        digest = await generator.generate(since=since, force=force)
 
         if not digest:
             console.print("[yellow]No digest generated (no emails or below threshold).[/yellow]")

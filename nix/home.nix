@@ -262,7 +262,6 @@ let
       digest = {
         enabled = cfg.service.digest.enable;
         schedule = cfg.service.digest.schedule;
-        period_hours = cfg.service.digest.periodHours;
         min_emails = cfg.service.digest.minEmails;
         include_action_items = cfg.service.digest.includeActionItems;
         delivery = map convertDigestDelivery cfg.service.digest.delivery;
@@ -501,12 +500,6 @@ in
           default = [ "08:00" "20:00" ];
           description = "Times to generate digests (24h format)";
           example = [ "08:00" "12:00" "18:00" ];
-        };
-
-        periodHours = mkOption {
-          type = types.int;
-          default = 12;
-          description = "Hours to include in each digest";
         };
 
         minEmails = mkOption {

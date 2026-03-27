@@ -45,7 +45,7 @@ class TestDigestGenerator:
     async def test_generate_no_emails(self, settings: Settings, state: ServiceState) -> None:
         generator = DigestGenerator(settings, state)
 
-        digest = await generator.generate(period_hours=12)
+        digest = await generator.generate(since=datetime.now() - timedelta(hours=12))
         assert digest is None
 
     @pytest.mark.asyncio
@@ -53,7 +53,7 @@ class TestDigestGenerator:
         generator = DigestGenerator(settings, state)
 
         # Even with no emails, force should generate
-        digest = await generator.generate(period_hours=12, force=True)
+        digest = await generator.generate(since=datetime.now() - timedelta(hours=12), force=True)
         assert digest is not None
         assert digest.email_count == 0
 
@@ -74,7 +74,7 @@ class TestDigestGenerator:
         )
 
         generator = DigestGenerator(settings, state)
-        digest = await generator.generate(period_hours=12)
+        digest = await generator.generate(since=datetime.now() - timedelta(hours=12))
 
         assert digest is not None
         assert digest.email_count == 2
@@ -90,7 +90,7 @@ class TestDigestGenerator:
         settings.service.digest.min_emails = 2
 
         generator = DigestGenerator(settings, state)
-        digest = await generator.generate(period_hours=12)
+        digest = await generator.generate(since=datetime.now() - timedelta(hours=12))
 
         assert digest is None  # Below threshold
 
@@ -100,7 +100,7 @@ class TestDigestGenerator:
         state.mark_email_processed("e2", "imap", "INBOX")
 
         generator = DigestGenerator(settings, state)
-        digest = await generator.generate(period_hours=12)
+        digest = await generator.generate(since=datetime.now() - timedelta(hours=12))
 
         # Check that emails are now linked to the digest
         undigested = state.get_undigested_emails(
@@ -117,7 +117,7 @@ class TestDigestDelivery:
         state.mark_email_processed("e1", "imap", "INBOX")
 
         generator = DigestGenerator(settings, state)
-        digest = await generator.generate(period_hours=12, force=True)
+        digest = await generator.generate(since=datetime.now() - timedelta(hours=12), force=True)
 
         assert digest is not None
 
@@ -146,7 +146,7 @@ class TestDigestDelivery:
         state.mark_email_processed("e1", "imap", "INBOX")
 
         generator = DigestGenerator(settings, state)
-        digest = await generator.generate(period_hours=12, force=True)
+        digest = await generator.generate(since=datetime.now() - timedelta(hours=12), force=True)
 
         success = await generator.deliver(digest)
         assert success
@@ -169,7 +169,7 @@ class TestDigestDelivery:
         state.mark_email_processed("e1", "imap", "INBOX")
 
         generator = DigestGenerator(settings, state)
-        digest = await generator.generate(period_hours=12, force=True)
+        digest = await generator.generate(since=datetime.now() - timedelta(hours=12), force=True)
 
         success = await generator.deliver(digest)
         assert success
@@ -211,7 +211,7 @@ class TestMarkdownGeneration:
         )
 
         generator = DigestGenerator(settings, state)
-        digest = await generator.generate(period_hours=12)
+        digest = await generator.generate(since=datetime.now() - timedelta(hours=12))
 
         assert digest is not None
         content = digest.raw_content
@@ -245,7 +245,7 @@ class TestMarkdownGeneration:
         )
 
         generator = DigestGenerator(settings, state)
-        digest = await generator.generate(period_hours=12)
+        digest = await generator.generate(since=datetime.now() - timedelta(hours=12))
 
         assert digest is not None
         content = digest.raw_content

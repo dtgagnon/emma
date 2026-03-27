@@ -3,7 +3,8 @@
 import asyncio
 import logging
 import signal
-from datetime import datetime
+from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -102,19 +103,20 @@ class EmmaService:
             )
             logger.info(f"Scheduled monitor job every {interval} seconds")
 
-        # Digest jobs - runs at scheduled times
+        # Digest jobs - runs at scheduled times with dynamic lookback
         if service_config.digest.enabled:
-            for schedule_time in service_config.digest.schedule:
+            lookbacks = self._compute_digest_lookbacks(service_config.digest.schedule)
+            for schedule_time, lookback_hours in lookbacks.items():
                 try:
                     hour, minute = map(int, schedule_time.split(":"))
                     self.scheduler.add_job(
-                        self._run_digest_job,
+                        partial(self._run_digest_job, lookback_hours=lookback_hours),
                         trigger=CronTrigger(hour=hour, minute=minute),
                         id=f"digest_{schedule_time}",
                         name=f"Digest at {schedule_time}",
                         replace_existing=True,
                     )
-                    logger.info(f"Scheduled digest job at {schedule_time}")
+                    logger.info(f"Scheduled digest job at {schedule_time} (lookback: {lookback_hours:.1f}h)")
                 except ValueError as e:
                     logger.error(f"Invalid schedule time '{schedule_time}': {e}")
 
@@ -137,13 +139,39 @@ class EmmaService:
         except Exception as e:
             logger.error(f"Monitor job failed: {e}")
 
-    async def _run_digest_job(self) -> None:
+    @staticmethod
+    def _compute_digest_lookbacks(schedule: list[str]) -> dict[str, float]:
+        """Compute lookback hours for each schedule time based on gap to previous.
+
+        Given schedule ["08:00", "20:00"], the 08:00 job looks back 12h (to 20:00
+        previous day) and the 20:00 job looks back 12h (to 08:00 same day).
+
+        With ["08:00", "14:00", "20:00"], lookbacks are 12h, 6h, 6h respectively.
+        """
+        if not schedule:
+            return {}
+
+        # Parse and sort times as minutes-since-midnight
+        parsed = []
+        for t in schedule:
+            h, m = map(int, t.split(":"))
+            parsed.append((h * 60 + m, t))
+        parsed.sort()
+
+        lookbacks = {}
+        for i, (minutes, time_str) in enumerate(parsed):
+            prev_minutes = parsed[i - 1][0]  # wraps to last element when i=0
+            gap = (minutes - prev_minutes) % (24 * 60) or (24 * 60)
+            lookbacks[time_str] = gap / 60.0
+
+        return lookbacks
+
+    async def _run_digest_job(self, lookback_hours: float) -> None:
         """Execute the digest generation job."""
-        logger.info("Running digest job")
+        logger.info(f"Running digest job (lookback: {lookback_hours:.1f}h)")
         try:
-            digest = await self.digest_generator.generate(
-                period_hours=self.settings.service.digest.period_hours,
-            )
+            since = datetime.now() - timedelta(hours=lookback_hours)
+            digest = await self.digest_generator.generate(since=since)
             if digest:
                 await self.digest_generator.deliver(digest)
                 self._last_digest_run = datetime.now()
@@ -226,9 +254,7 @@ class EmmaService:
             results["monitor"] = await self.monitor.run_cycle()
 
         if run_digest:
-            digest = await self.digest_generator.generate(
-                period_hours=self.settings.service.digest.period_hours,
-            )
+            digest = await self.digest_generator.generate()
             if digest:
                 delivered = await self.digest_generator.deliver(digest)
                 results["digest"] = {
