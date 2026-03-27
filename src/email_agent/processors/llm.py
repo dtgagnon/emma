@@ -21,7 +21,7 @@ class LLMClient(ABC):
     """Abstract base class for LLM clients."""
 
     @abstractmethod
-    def chat(self, messages: list[dict[str, str]], max_tokens: int) -> str:
+    def chat(self, messages: list[dict[str, str]], max_tokens: int, json_mode: bool = False) -> str:
         """Send a chat completion request and return the response text."""
         ...
 
@@ -36,7 +36,7 @@ class AnthropicClient(LLMClient):
         self.model = model
         logger.info(f"Initialized Anthropic client: model={model}")
 
-    def chat(self, messages: list[dict[str, str]], max_tokens: int) -> str:
+    def chat(self, messages: list[dict[str, str]], max_tokens: int, json_mode: bool = False) -> str:
         start = time.monotonic()
         response = self.client.messages.create(
             model=self.model,
@@ -59,19 +59,22 @@ class OllamaClient(LLMClient):
         self.context_length = context_length
         logger.info(f"Initialized Ollama client: model={model}, base_url={base_url}, ctx={context_length}")
 
-    def chat(self, messages: list[dict[str, str]], max_tokens: int) -> str:
+    def chat(self, messages: list[dict[str, str]], max_tokens: int, json_mode: bool = False) -> str:
         # Retry logic to handle transient empty responses (e.g., model warmup)
         max_retries = 2
         for attempt in range(max_retries + 1):
             start = time.monotonic()
-            response = self.client.chat(
-                model=self.model,
-                messages=messages,  # type: ignore
-                options={
+            kwargs: dict[str, Any] = {
+                "model": self.model,
+                "messages": messages,
+                "options": {
                     "num_ctx": self.context_length,
                     "num_predict": max_tokens,
                 },
-            )
+            }
+            if json_mode:
+                kwargs["format"] = "json"
+            response = self.client.chat(**kwargs)  # type: ignore
             elapsed = time.monotonic() - start
             content = response["message"]["content"] or ""
             if content.strip():
@@ -98,13 +101,16 @@ class OpenAICompatibleClient(LLMClient):
         self.model = model
         logger.info(f"Initialized OpenAI-compatible client: model={model}, base_url={base_url}")
 
-    def chat(self, messages: list[dict[str, str]], max_tokens: int) -> str:
+    def chat(self, messages: list[dict[str, str]], max_tokens: int, json_mode: bool = False) -> str:
         start = time.monotonic()
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,  # type: ignore
-            max_tokens=max_tokens,
-        )
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        response = self.client.chat.completions.create(**kwargs)  # type: ignore
         elapsed = time.monotonic() - start
         logger.debug(f"OpenAI-compatible chat completed in {elapsed:.1f}s (model={self.model})")
         return response.choices[0].message.content or ""
@@ -166,7 +172,7 @@ class LLMProcessor:
                 self._task_clients[task] = (create_llm_client(resolved, self._api_key), resolved)
         return self._task_clients[task]
 
-    def _chat(self, prompt: str, max_tokens: int | None = None, task: str | None = None) -> str:
+    def _chat(self, prompt: str, max_tokens: int | None = None, task: str | None = None, json_mode: bool = False) -> str:
         """Send a chat message and get the response."""
         if task:
             client, config = self._get_task_client(task)
@@ -178,6 +184,7 @@ class LLMProcessor:
         result = client.chat(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=tokens,
+            json_mode=json_mode,
         )
         elapsed = time.monotonic() - start
         logger.info(f"LLM response: task={task}, model={config.model}, {elapsed:.1f}s, response_len={len(result)}")
@@ -317,7 +324,7 @@ Example response:
 
 Return ONLY valid JSON, no other text."""
 
-        response = self._chat(prompt, task="analyze")
+        response = self._chat(prompt, task="analyze", json_mode=True)
 
         try:
             result = self._parse_json(response)
@@ -358,7 +365,7 @@ Classification tips:
 Return JSON:
 {{"category": "<personal|work_clients|work_admin|newsletter|promotional|spam|other>", "priority": "<low|normal|high|urgent>"}}"""
 
-        response = self._chat(prompt, task="classify")
+        response = self._chat(prompt, task="classify", json_mode=True)
 
         try:
             result = self._parse_json(response)
