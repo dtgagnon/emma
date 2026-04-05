@@ -179,7 +179,10 @@ class LLMProcessor:
         else:
             client, config = self.client, self.config
         tokens = max_tokens or config.max_tokens
-        logger.debug(f"LLM request: task={task}, model={config.model}, max_tokens={tokens}, prompt_len={len(prompt)}")
+        # Reasoning models consume reasoning_budget tokens from max_tokens,
+        # so add the budget on top to ensure enough room for actual content.
+        tokens += config.reasoning_budget
+        logger.debug(f"LLM request: task={task}, model={config.model}, max_tokens={tokens} (content={max_tokens or config.max_tokens}+reasoning={config.reasoning_budget}), prompt_len={len(prompt)}")
         start = time.monotonic()
         result = client.chat(
             messages=[{"role": "user", "content": prompt}],

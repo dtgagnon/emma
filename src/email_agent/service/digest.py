@@ -147,12 +147,13 @@ Total: {len(emails)} emails (promotions/spam filtered out)
 Focus on: appointments, meetings, client updates, personal items (health, finances), and work updates.
 Mention specific senders, key topics, and any urgent items. Be specific and actionable.
 
-Overview:"""
+Return JSON: {{"overview": "<your 2-4 sentence executive overview>"}}"""
 
         try:
-            overview = self.llm_processor._chat(prompt, task="analyze")
-            if overview and overview.strip():
-                return overview.strip()
+            response = self.llm_processor._chat(prompt, task="analyze", json_mode=True)
+            result = self.llm_processor._parse_json(response)
+            if isinstance(result, dict) and result.get("overview", "").strip():
+                return result["overview"].strip()
         except Exception as e:
             logger.error(f"Error generating digest overview: {e}", exc_info=True)
 

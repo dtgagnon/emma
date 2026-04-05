@@ -99,6 +99,7 @@ class LLMTaskOverride(BaseModel):
     max_tokens: int | None = None
     base_url: str | None = None
     context_length: int | None = None
+    reasoning_budget: int | None = None
 
 
 class LLMConfig(BaseModel):
@@ -109,6 +110,7 @@ class LLMConfig(BaseModel):
     max_tokens: int = 1024
     base_url: str = "http://localhost:11434"  # API base URL (provider-specific)
     context_length: int = 24576  # Context window size for the model
+    reasoning_budget: int = 0  # Reasoning token budget (added on top of max_tokens)
 
     # Per-task overrides (classify, analyze)
     tasks: dict[str, LLMTaskOverride] = Field(default_factory=dict)
@@ -124,6 +126,7 @@ class LLMConfig(BaseModel):
             max_tokens=override.max_tokens if override.max_tokens is not None else self.max_tokens,
             base_url=override.base_url or self.base_url,
             context_length=override.context_length if override.context_length is not None else self.context_length,
+            reasoning_budget=override.reasoning_budget if override.reasoning_budget is not None else self.reasoning_budget,
         )
 
 
