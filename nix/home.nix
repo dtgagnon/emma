@@ -223,6 +223,7 @@ let
       max_tokens = cfg.settings.llm.maxTokens;
       base_url = cfg.settings.llm.baseUrl;
       context_length = cfg.settings.llm.contextLength;
+      reasoning_budget = cfg.settings.llm.reasoningBudget;
       tasks = lib.mapAttrs (_name: task:
         { max_tokens = task.maxTokens; }
         // lib.filterAttrs (_: v: v != null) {
@@ -230,6 +231,7 @@ let
           model = task.model;
           base_url = task.baseUrl;
           context_length = task.contextLength;
+          reasoning_budget = task.reasoningBudget;
         }
       ) cfg.settings.llm.tasks;
     };
@@ -317,6 +319,12 @@ in
           description = "Context window size for the model";
         };
 
+        reasoningBudget = mkOption {
+          type = types.int;
+          default = 0;
+          description = "Reasoning token budget added on top of maxTokens for reasoning models (e.g. Qwen3 with --reasoning-budget). Set to 0 for non-reasoning models.";
+        };
+
         tasks = let
           mkTaskOverrideType = { defaultMaxTokens }: types.submodule {
             options = {
@@ -344,6 +352,11 @@ in
                 type = types.nullOr types.int;
                 default = null;
                 description = "Override context length for this task";
+              };
+              reasoningBudget = mkOption {
+                type = types.nullOr types.int;
+                default = null;
+                description = "Override reasoning token budget for this task";
               };
             };
           };
