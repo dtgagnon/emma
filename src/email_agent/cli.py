@@ -10,8 +10,17 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
-import click
 import typer
+
+# newer typer vendors click (no longer a dep); use it so exception classes match
+try:
+    from typer._click import shell_completion
+    from typer._click.core import Command, Context
+    from typer._click.exceptions import UsageError
+except ImportError:
+    from click import shell_completion
+    from click.core import Command, Context
+    from click.exceptions import UsageError
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -33,11 +42,11 @@ class HelpOnUnknownGroup(typer.core.TyperGroup):
     """Custom Typer Group that shows help text when an unknown command is entered."""
 
     def resolve_command(
-        self, ctx: click.Context, args: list[str]
-    ) -> tuple[str | None, click.Command | None, list[str]]:
+        self, ctx: Context, args: list[str]
+    ) -> tuple[str | None, Command | None, list[str]]:
         try:
             return super().resolve_command(ctx, args)
-        except click.UsageError as e:
+        except UsageError as e:
             if "No such command" in str(e):
                 console.print(f"[red]Error: {e.format_message()}[/red]\n")
                 console.print(ctx.get_help())
@@ -831,8 +840,6 @@ def completion_install(
     if detected_shell in TYPER_SUPPORTED_SHELLS:
         try:
             # Use typer's completion installation
-            import click.shell_completion
-
             shell_map = {
                 "bash": "bash",
                 "zsh": "zsh",
@@ -845,7 +852,7 @@ def completion_install(
             # Get completion script
             from typer import main as typer_main
 
-            shell_complete = click.shell_completion.get_completion_class(shell_name)
+            shell_complete = shell_completion.get_completion_class(shell_name)
             if shell_complete:
                 comp = shell_complete(app, {}, "emma", "_EMMA_COMPLETE")
                 script = comp.source()
@@ -880,8 +887,6 @@ def completion_show(
 
     if detected_shell in TYPER_SUPPORTED_SHELLS:
         try:
-            import click.shell_completion
-
             shell_map = {
                 "bash": "bash",
                 "zsh": "zsh",
@@ -890,7 +895,7 @@ def completion_show(
                 "pwsh": "powershell",
             }
             shell_name = shell_map.get(detected_shell, detected_shell)
-            shell_complete = click.shell_completion.get_completion_class(shell_name)
+            shell_complete = shell_completion.get_completion_class(shell_name)
             if shell_complete:
                 comp = shell_complete(app, {}, "emma", "_EMMA_COMPLETE")
                 console.print(comp.source())
